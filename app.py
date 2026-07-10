@@ -21,7 +21,12 @@ MENU_CATEGORIES = ["Bebidas", "Comidas"]
 ADMIN_PASSWORD = "admin"
 
 
-st.set_page_config(page_title="Controle da Adega", page_icon=":wine_glass:", layout="wide")
+st.set_page_config(
+    page_title="Controle da Adega",
+    page_icon=":wine_glass:",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 
 def load_json(path: Path, empty_message: str) -> dict:
@@ -409,8 +414,17 @@ def complete_kitchen_order(kitchen_orders: dict, order_id: str) -> None:
     if order_id not in kitchen_orders:
         return
 
-    kitchen_orders[order_id]["status"] = "done"
+    kitchen_orders[order_id]["status"] = "ready"
     kitchen_orders[order_id]["completed_at"] = datetime.now().isoformat(timespec="minutes")
+    save_kitchen_orders(kitchen_orders)
+
+
+def deliver_kitchen_order(kitchen_orders: dict, order_id: str) -> None:
+    if order_id not in kitchen_orders:
+        return
+
+    kitchen_orders[order_id]["status"] = "delivered"
+    kitchen_orders[order_id]["delivered_at"] = datetime.now().isoformat(timespec="minutes")
     save_kitchen_orders(kitchen_orders)
 
 
@@ -426,7 +440,9 @@ def start_kitchen_order(kitchen_orders: dict, order_id: str) -> None:
 def kitchen_status_label(status: str) -> str:
     labels = {
         "pending": "Pendente",
-        "started": "Iniciada",
+        "started": "Em andamento",
+        "ready": "Pronto",
+        "delivered": "Entregue",
         "done": "Concluida",
     }
     return labels.get(status, status or "Pendente")
@@ -751,7 +767,23 @@ def show_quick_sale_dialog(
     st.markdown(f"### {item_name}")
     st.caption(f"Valor unitario: {money(item_price)}")
 
-    quantity = st.number_input("Quantidade", min_value=0.01, value=1.0, step=1.0, key=f"quick_dialog_qty_{item_id}")
+    quantity_col, total_col = st.columns([0.85, 1.15])
+    quantity = quantity_col.number_input(
+        "Quantidade",
+        min_value=0.01,
+        value=1.0,
+        step=1.0,
+        key=f"quick_dialog_qty_{item_id}",
+    )
+    total_col.markdown(
+        f"""
+        <div class="quick-sale-total">
+            <span>Total a cobrar</span>
+            <strong>{money(quantity * item_price)}</strong>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     payment_method = payment_checkbox_group("Metodo de pagamento", payment_options, f"quick_dialog_payment_{item_id}")
     send_to_account = st.checkbox("Enviar para caderneta", key=f"quick_dialog_to_account_{item_id}")
 
@@ -872,7 +904,7 @@ def render_sales_tab(accounts: dict, sales: dict, kitchen_orders: dict, menu: di
                 for item_id, item in category_items:
                     with st.container(border=True):
                         st.markdown('<span class="quick-menu-row-marker"></span>', unsafe_allow_html=True)
-                        item_cols = st.columns([2.4, 0.9, 1])
+                        item_cols = st.columns([2.2, 0.82, 0.82])
                         item_cols[0].write(item["name"])
                         item_cols[1].write(money(float(item["price"])))
                         if item_cols[2].button("Adicionar", key=f"quick_sale_{item_id}", use_container_width=True):
@@ -1029,7 +1061,7 @@ def render_kitchen_tab(kitchen_orders: dict, sales: dict) -> None:
     for position, (order_id, order) in enumerate(pending_orders, start=1):
         with st.container(border=True):
             status = order.get("status", "pending")
-            status_label = "Iniciada" if status == "started" else "Pendente"
+            status_label = "Em andamento" if status == "started" else "Pendente"
             cols = st.columns([0.55, 2.4, 0.85, 1.25, 0.95, 1, 1])
             cols[0].write(f"#{position}")
             cols[1].markdown(f"**{escape(order.get('description', ''))}**")
@@ -1044,9 +1076,13 @@ def render_kitchen_tab(kitchen_orders: dict, sales: dict) -> None:
                 st.success("Porcao iniciada.")
                 st.rerun()
 
-            if cols[6].button("Concluir", key=f"complete_kitchen_{order_id}"):
+            if cols[6].button(
+                "Pronto",
+                key=f"complete_kitchen_{order_id}",
+                disabled=status != "started",
+            ):
                 complete_kitchen_order(kitchen_orders, order_id)
-                st.success("Pedido concluido.")
+                st.success("Pedido pronto para entrega.")
                 st.rerun()
 
             if order.get("note"):
@@ -1057,40 +1093,84 @@ def render_kitchen_tab(kitchen_orders: dict, sales: dict) -> None:
 
 
 def render_kitchen_status_panel(kitchen_orders: dict) -> None:
-    active_orders = [
+    ready_orders = [
+        (order_id, order)
+        for order_id, order in kitchen_orders.items()
+        if order.get("status") == "ready"
+    ]
+    ready_orders.sort(key=lambda order_item: order_item[1].get("completed_at", ""))
+
+    kitchen_queue = [
         (order_id, order)
         for order_id, order in kitchen_orders.items()
         if order.get("status", "pending") in {"pending", "started"}
     ]
-    active_orders.sort(key=lambda order_item: order_item[1].get("created_at", ""))
+    kitchen_queue.sort(key=lambda order_item: order_item[1].get("created_at", ""))
 
-    st.markdown('<div class="kitchen-status-panel-title">Porcoes na cozinha</div>', unsafe_allow_html=True)
-
-    if not active_orders:
-        st.info("Nenhuma porcao em preparo.")
-        return
-
-    for position, (_order_id, order) in enumerate(active_orders, start=1):
-        status = order.get("status", "pending")
-        status_label = kitchen_status_label(status)
-        customer = order.get("customer_name") or "Sem cliente"
-        note = order.get("note", "").strip()
-        note_markup = f'<p class="kitchen-status-note">Obs.: {escape(note)}</p>' if note else ""
+    with st.container(key="kitchen_status_panel"):
+        st.markdown('<span class="kitchen-status-panel-kicker">Acompanhamento</span>', unsafe_allow_html=True)
+        st.markdown('<div class="kitchen-status-panel-title">Status da cozinha</div>', unsafe_allow_html=True)
 
         st.markdown(
-            f"""
-            <div class="kitchen-status-card">
-                <div class="kitchen-status-card-top">
-                    <span>#{position}</span>
-                    <span class="kitchen-status-badge {escape(status)}">{escape(status_label)}</span>
-                </div>
-                <strong>{escape(order.get("description", ""))}</strong>
-                <p>{float(order.get("quantity", 0)):g} un. | {escape(customer)}</p>
-                {note_markup}
-            </div>
-            """,
+            f'<div class="kitchen-panel-section ready">Prontos para entrega <span>{len(ready_orders)}</span></div>',
             unsafe_allow_html=True,
         )
+        if not ready_orders:
+            st.caption("Nenhum pedido aguardando entrega.")
+        for position, (order_id, order) in enumerate(ready_orders, start=1):
+            with st.container(border=True):
+                customer = order.get("customer_name") or "Sem cliente"
+                st.markdown(f'**#{position} · {escape(order.get("description", ""))}**')
+                st.caption(f'{float(order.get("quantity", 0)):g} un. | {customer}')
+                if order.get("note"):
+                    st.write(f'Obs.: {order["note"]}')
+                if st.button("Entregue", key=f"deliver_kitchen_{order_id}", use_container_width=True):
+                    deliver_kitchen_order(kitchen_orders, order_id)
+                    st.success("Pedido entregue ao cliente.")
+                    st.rerun()
+
+        st.markdown(
+            f'<div class="kitchen-panel-section queue">Fila da cozinha <span>{len(kitchen_queue)}</span></div>',
+            unsafe_allow_html=True,
+        )
+        if not kitchen_queue:
+            st.caption("Nenhum pedido na fila da cozinha.")
+        for position, (_order_id, order) in enumerate(kitchen_queue, start=1):
+            status = order.get("status", "pending")
+            customer = order.get("customer_name") or "Sem cliente"
+            with st.container(border=True):
+                st.markdown(
+                    f'**#{position} · {escape(order.get("description", ""))}** '
+                    f'<span class="kitchen-status-badge {escape(status)}">{escape(kitchen_status_label(status))}</span>',
+                    unsafe_allow_html=True,
+                )
+                st.caption(f'{float(order.get("quantity", 0)):g} un. | {customer}')
+                if order.get("note"):
+                    st.write(f'Obs.: {order["note"]}')
+
+
+def render_module_portal() -> None:
+    st.markdown(brand_header_markup(), unsafe_allow_html=True)
+    st.markdown('<h1 class="module-portal-title">Escolha o módulo desta máquina</h1>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="module-portal-description">Cada equipamento permanecerá no módulo selecionado até você voltar para esta tela.</p>',
+        unsafe_allow_html=True,
+    )
+
+    modules = [
+        ("Frente de caixa", "Vendas, saídas, caderneta do fiado e acompanhamento da cozinha."),
+        ("Cozinha", "Fila de pedidos para iniciar e concluir a confecção."),
+        ("Admin", "Caixa, vendas, cardápio e demais controles administrativos."),
+    ]
+    columns = st.columns(3)
+    for column, (module_name, description) in zip(columns, modules):
+        with column:
+            with st.container(border=True):
+                st.markdown(f'<div class="module-portal-card-title">{module_name}</div>', unsafe_allow_html=True)
+                st.markdown(f'<p class="module-portal-card-description">{description}</p>', unsafe_allow_html=True)
+                if st.button(f"Entrar em {module_name}", key=f"open_module_{module_name}", use_container_width=True):
+                    st.session_state.active_module = module_name
+                    st.rerun()
 
 
 def apply_styles() -> None:
@@ -1130,8 +1210,7 @@ def apply_styles() -> None:
             }
 
             header[data-testid="stHeader"],
-            div[data-testid="stToolbar"],
-            div[data-testid="collapsedControl"] {
+            div[data-testid="stToolbar"] {
                 display: none;
             }
 
@@ -1228,6 +1307,32 @@ def apply_styles() -> None:
                 overflow-wrap: anywhere;
             }
 
+            .quick-sale-total {
+                background: #092216;
+                border: 1px solid #1a5131;
+                border-radius: 8px;
+                margin-top: 1.65rem;
+                min-height: 2.7rem;
+                padding: .38rem .55rem;
+            }
+
+            .quick-sale-total span {
+                color: var(--muted);
+                display: block;
+                font-size: .68rem;
+                font-weight: 900;
+                line-height: 1;
+                text-transform: uppercase;
+            }
+
+            .quick-sale-total strong {
+                color: #fff1c7;
+                display: block;
+                font-size: 1rem;
+                line-height: 1.2;
+                margin-top: .18rem;
+            }
+
             div[data-testid="stForm"],
             div[data-testid="stVerticalBlockBorderWrapper"],
             div[data-testid="stExpander"],
@@ -1245,6 +1350,28 @@ def apply_styles() -> None:
             section[data-testid="stSidebar"] {
                 background: linear-gradient(180deg, #071c11, #04110b);
                 border-right: 1px solid var(--line);
+                margin-left: 0 !important;
+                max-width: 21rem !important;
+                min-width: 21rem !important;
+                transform: translateX(0) !important;
+                visibility: visible !important;
+                width: 21rem !important;
+            }
+
+            section[data-testid="stSidebar"] > div {
+                visibility: visible !important;
+            }
+
+            section[data-testid="stSidebar"][aria-expanded="false"] {
+                max-width: 21rem !important;
+                min-width: 21rem !important;
+                width: 21rem !important;
+            }
+
+            [data-testid="stSidebarCollapseButton"],
+            [data-testid="stSidebarCollapsedControl"],
+            [data-testid="collapsedControl"] {
+                display: none !important;
             }
 
             .sidebar-title {
@@ -1254,10 +1381,137 @@ def apply_styles() -> None:
                 margin: .25rem 0 .8rem;
             }
 
-            .kitchen-status-panel-action {
-                border-top: 1px solid #1a5131;
-                margin-top: .9rem;
-                padding-top: .9rem;
+            .sidebar-module-label {
+                color: var(--muted);
+                font-size: .7rem;
+                font-weight: 800;
+                letter-spacing: .09em;
+                margin: 1rem 0 .35rem;
+                text-transform: uppercase;
+            }
+
+            .module-portal-title {
+                color: var(--ink);
+                font-size: clamp(1.65rem, 4vw, 2.5rem);
+                margin: 1.8rem 0 .45rem;
+                text-align: center;
+            }
+
+            .module-portal-description {
+                color: var(--muted);
+                margin: 0 auto 1.6rem;
+                max-width: 42rem;
+                text-align: center;
+            }
+
+            .module-portal-card-title {
+                color: var(--ink);
+                font-size: 1.25rem;
+                font-weight: 900;
+                margin-bottom: .5rem;
+            }
+
+            .module-portal-card-description {
+                color: var(--muted);
+                min-height: 4.5rem;
+            }
+
+            .st-key-kitchen_status_panel {
+                background: linear-gradient(180deg, #071c11, #04110b);
+                border-left: 1px solid var(--line);
+                bottom: 0;
+                box-shadow: -12px 0 32px rgba(0, 0, 0, .28);
+                color: var(--ink);
+                overflow-y: auto;
+                padding: 1.15rem .85rem;
+                position: fixed;
+                right: 0;
+                top: 0;
+                width: 21rem;
+                z-index: 999;
+            }
+
+            .stApp:has(.st-key-kitchen_status_panel) .block-container {
+                max-width: 980px;
+            }
+
+            .stApp:has(.st-key-kitchen_status_panel) section.main,
+            .stApp:has(.st-key-kitchen_status_panel) [data-testid="stAppViewContainer"] > .main {
+                margin-right: 21rem;
+            }
+
+            .kitchen-status-panel-header {
+                align-items: center;
+                border-bottom: 1px solid #1a5131;
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: .8rem;
+                padding: .25rem .15rem .75rem;
+            }
+
+            .kitchen-status-panel-kicker {
+                color: var(--muted);
+                font-size: .7rem;
+                font-weight: 700;
+                letter-spacing: .08em;
+                text-transform: uppercase;
+            }
+
+            .kitchen-status-count {
+                align-items: center;
+                background: #ffd21f;
+                border-radius: 999px;
+                color: #171006;
+                display: flex;
+                font-size: .8rem;
+                font-weight: 900;
+                height: 1.8rem;
+                justify-content: center;
+                min-width: 1.8rem;
+                padding: 0 .4rem;
+            }
+
+            .kitchen-panel-section {
+                align-items: center;
+                border-bottom: 1px solid #1a5131;
+                color: var(--ink);
+                display: flex;
+                font-size: .88rem;
+                font-weight: 900;
+                justify-content: space-between;
+                margin: 1rem 0 .65rem;
+                padding-bottom: .45rem;
+                text-transform: uppercase;
+            }
+
+            .kitchen-panel-section span {
+                align-items: center;
+                background: #ffd21f;
+                border-radius: 999px;
+                color: #171006;
+                display: inline-flex;
+                font-size: .72rem;
+                height: 1.5rem;
+                justify-content: center;
+                min-width: 1.5rem;
+                padding: 0 .35rem;
+            }
+
+            .kitchen-panel-section.ready span {
+                background: #65df91;
+            }
+
+            .kitchen-status-list {
+                display: flex;
+                flex-direction: column;
+            }
+
+            .kitchen-status-empty {
+                border: 1px dashed #2a6542;
+                border-radius: 8px;
+                color: var(--muted);
+                padding: 1rem .75rem;
+                text-align: center;
             }
 
             .kitchen-status-panel-title {
@@ -1312,6 +1566,10 @@ def apply_styles() -> None:
 
             .kitchen-status-badge.started {
                 background: #8dd7ff;
+            }
+
+            .kitchen-status-badge.ready {
+                background: #65df91;
             }
 
             .kitchen-status-note {
@@ -1470,12 +1728,12 @@ def apply_styles() -> None:
 
             div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-menu-row-marker) {
                 box-shadow: none;
-                margin-bottom: .28rem;
+                margin-bottom: .22rem;
                 min-height: 0;
             }
 
             div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-menu-row-marker) > div {
-                padding: .18rem .45rem;
+                padding: .1rem .34rem;
             }
 
             div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-menu-row-marker)
@@ -1488,21 +1746,23 @@ def apply_styles() -> None:
             div[data-testid="column"] {
                 align-items: center;
                 display: flex;
-                min-height: 1.9rem;
+                min-height: 1.55rem;
             }
 
             div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-menu-row-marker)
             .stMarkdown,
             div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-menu-row-marker)
             p {
+                font-size: .82rem;
+                line-height: 1.1;
                 margin: 0;
             }
 
             div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-menu-row-marker)
             .stButton > button {
-                font-size: .82rem;
-                min-height: 1.95rem;
-                padding: 0 .45rem;
+                font-size: .72rem;
+                min-height: 1.65rem;
+                padding: 0 .28rem;
             }
 
             div[data-testid="stVerticalBlockBorderWrapper"]:has(.menu-item-row-marker) {
@@ -1641,6 +1901,26 @@ def apply_styles() -> None:
                     height: 3.35rem;
                     width: 3.35rem;
                 }
+
+                .st-key-kitchen_status_panel {
+                    border: 1px solid var(--line);
+                    border-radius: 8px;
+                    margin-bottom: 1rem;
+                    max-height: 65vh;
+                    padding: .85rem;
+                    position: relative;
+                    width: 100%;
+                    z-index: auto;
+                }
+
+                .stApp:has(.st-key-kitchen_status_panel) .main .block-container {
+                    padding-right: .85rem;
+                }
+
+                .stApp:has(.st-key-kitchen_status_panel) section.main,
+                .stApp:has(.st-key-kitchen_status_panel) [data-testid="stAppViewContainer"] > .main {
+                    margin-right: 0;
+                }
             }
         </style>
         """,
@@ -1668,63 +1948,71 @@ if "edit_menu_item_id" not in st.session_state:
 if "quick_sale_item_id" not in st.session_state:
     st.session_state.quick_sale_item_id = None
 
-if "show_kitchen_status_panel" not in st.session_state:
-    st.session_state.show_kitchen_status_panel = False
-
 if "admin_logged_in" not in st.session_state:
     st.session_state.admin_logged_in = False
 
+if "active_module" not in st.session_state:
+    st.session_state.active_module = None
+
+selected_module = st.session_state.active_module
+if selected_module not in {"Frente de caixa", "Cozinha", "Admin"}:
+    st.session_state.active_module = None
+    with st.sidebar:
+        st.markdown(brand_header_markup(), unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-title">Controle da Adega</div>', unsafe_allow_html=True)
+        st.info("Escolha um dos módulos na página inicial.")
+    render_module_portal()
+    st.stop()
+
 with st.sidebar:
     st.markdown(brand_header_markup(), unsafe_allow_html=True)
-    st.markdown('<div class="sidebar-title">Menu</div>', unsafe_allow_html=True)
-    menu_options = ["Saidas da adega", "Caderneta do fiado", "Login admin"]
-    if st.session_state.admin_logged_in:
-        menu_options = [
-            "Saidas da adega",
-            "Caderneta do fiado",
-            "Admin",
-            "Resumo de vendas",
-            "Cardapio",
-            "Sair admin",
-            "Cozinha",
-        ]
+    st.markdown(f'<div class="sidebar-title">{selected_module}</div>', unsafe_allow_html=True)
+    selected_page = None
+    if selected_module == "Frente de caixa":
+        st.markdown('<div class="sidebar-module-label">Operação</div>', unsafe_allow_html=True)
+        selected_page = st.radio(
+            "Menu da frente de caixa",
+            ["Saídas da adega", "Caderneta do fiado"],
+            label_visibility="collapsed",
+            key="front_page",
+        )
+    elif selected_module == "Cozinha":
+        st.markdown('<div class="sidebar-module-label">Produção de pedidos</div>', unsafe_allow_html=True)
+    elif selected_module == "Admin":
+        st.markdown('<div class="sidebar-module-label">Controles administrativos</div>', unsafe_allow_html=True)
+        selected_page = st.radio(
+            "Menu administrativo",
+            [
+                "Resumo de vendas",
+                "Cardápio",
+                "Saídas da adega",
+                "Caderneta do fiado",
+                "Cozinha",
+            ],
+            label_visibility="collapsed",
+            key="admin_page",
+        )
 
-    selected_page = st.radio(
-        "Navegacao",
-        menu_options,
-        label_visibility="collapsed",
-    )
+    st.markdown('<div class="sidebar-module-label">Sistema</div>', unsafe_allow_html=True)
+    if st.button("Voltar aos módulos", key="return_to_module_portal", use_container_width=True):
+        st.session_state.active_module = None
+        st.session_state.admin_logged_in = False
+        st.rerun()
 
-    if selected_page == "Saidas da adega":
-        st.markdown('<div class="kitchen-status-panel-action"></div>', unsafe_allow_html=True)
-        panel_label = "Fechar status da cozinha" if st.session_state.show_kitchen_status_panel else "Status da cozinha"
-        if st.button(panel_label, key="toggle_kitchen_status_panel"):
-            st.session_state.show_kitchen_status_panel = not st.session_state.show_kitchen_status_panel
-            st.rerun()
+if selected_module == "Frente de caixa" and selected_page == "Saídas da adega":
+    render_kitchen_status_panel(kitchen_orders)
 
-        if st.session_state.show_kitchen_status_panel:
-            render_kitchen_status_panel(kitchen_orders)
-
-    else:
-        st.session_state.show_kitchen_status_panel = False
-
-if selected_page == "Caderneta do fiado":
-    render_accounts_tab(accounts, menu)
-elif selected_page == "Saidas da adega":
-    render_sales_tab(accounts, sales, kitchen_orders, menu, cash_sessions)
-elif selected_page == "Cozinha" and st.session_state.admin_logged_in:
+if selected_module == "Cozinha":
     render_kitchen_tab(kitchen_orders, sales)
-elif selected_page == "Login admin":
-    render_admin_login()
-elif selected_page == "Admin":
-    render_admin_login()
-elif selected_page == "Resumo de vendas" and st.session_state.admin_logged_in:
+elif selected_page == "Saídas da adega":
+    render_sales_tab(accounts, sales, kitchen_orders, menu, cash_sessions)
+elif selected_page == "Caderneta do fiado":
+    render_accounts_tab(accounts, menu)
+elif selected_page == "Cozinha":
+    render_kitchen_tab(kitchen_orders, sales)
+elif selected_page == "Resumo de vendas":
     render_sales_summary_tab(sales, cash_sessions)
-elif selected_page == "Cardapio" and st.session_state.admin_logged_in:
+elif selected_page == "Cardápio":
     render_menu_tab(menu)
-elif selected_page == "Sair admin":
-    st.session_state.admin_logged_in = False
-    st.success("Admin desconectado.")
-    st.rerun()
 else:
-    render_admin_login()
+    render_sales_summary_tab(sales, cash_sessions)

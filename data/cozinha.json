@@ -72,5 +72,19 @@
     "created_at": "2026-07-09T23:22",
     "started_at": "2026-07-09T23:23",
     "completed_at": "2026-07-09T23:23"
+  },
+  "01676a0d-38ca-4285-b2d3-90bca65dd538": {
+    "description": "Porção de batata básica",
+    "quantity": 2.0,
+    "price": 25.0,
+    "payment_method": "Cartao",
+    "customer_name": "",
+    "note": "",
+    "origin": "Venda",
+    "status": "delivered",
+    "created_at": "2026-07-10T14:29",
+    "started_at": "2026-07-10T14:30",
+    "completed_at": "2026-07-10T14:30",
+    "delivered_at": "2026-07-10T14:30"
   }
 }

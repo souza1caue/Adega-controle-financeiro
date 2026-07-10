@@ -388,5 +388,35 @@
     "note": "Sem cebola",
     "customer_name": "Lucas",
     "created_at": "2026-07-09T23:22"
+  },
+  "dc6e8fad-40c8-4d21-a625-78b1bf387bc6": {
+    "description": "Copão Jack",
+    "quantity": 3.0,
+    "price": 35.0,
+    "payment_method": "Cartao",
+    "note": "",
+    "customer_name": "",
+    "cash_session_id": "1e157a32-bd88-4c7f-a8b7-196189872762",
+    "created_at": "2026-07-10T14:29"
+  },
+  "76ed7bd7-a747-4fda-8f8a-ae30337c464f": {
+    "description": "Copão de cavalo branco",
+    "quantity": 3.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "customer_name": "",
+    "cash_session_id": "39bc571b-640b-4574-8fec-989d5de98d79",
+    "created_at": "2026-07-10T14:29"
+  },
+  "0425a648-f5ff-4b92-a3e7-aeb57a7e8233": {
+    "description": "Porção de batata básica",
+    "quantity": 2.0,
+    "price": 25.0,
+    "payment_method": "Cartao",
+    "note": "",
+    "customer_name": "",
+    "cash_session_id": "39bc571b-640b-4574-8fec-989d5de98d79",
+    "created_at": "2026-07-10T14:29"
   }
 }

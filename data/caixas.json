@@ -1,7 +1,22 @@
 {
   "1e157a32-bd88-4c7f-a8b7-196189872762": {
-    "status": "open",
+    "status": "closed",
     "opened_at": "2026-07-09T23:55",
+    "closed_at": "2026-07-10T14:29",
+    "sales_count": 1,
+    "total": 105.0,
+    "quantity": 3.0,
+    "items": [
+      {
+        "description": "Copão Jack",
+        "quantity": 3.0,
+        "total": 105.0
+      }
+    ]
+  },
+  "39bc571b-640b-4574-8fec-989d5de98d79": {
+    "status": "open",
+    "opened_at": "2026-07-10T14:29",
     "closed_at": ""
   }
 }
