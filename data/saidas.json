@@ -1,0 +1,392 @@
+{
+  "a34ba48b-fce9-43c1-866c-ff740639234f": {
+    "description": "Brahma",
+    "quantity": 1.0,
+    "price": 8.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:38"
+  },
+  "2a407462-b122-4d39-8888-2f50310299b8": {
+    "description": "Brahma",
+    "quantity": 1.0,
+    "price": 8.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:38"
+  },
+  "95b642ab-0bb2-4b8d-a495-abbc48c4afc5": {
+    "description": "Porção de batata básica",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:41"
+  },
+  "62a54034-351c-4130-ab78-d770b3f5c789": {
+    "description": "Porção de batata básica",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:41"
+  },
+  "aeb6bb67-d3b6-43e2-b0bd-b7e336b4654b": {
+    "description": "Porção de batata básica",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:41"
+  },
+  "4fc204ff-b476-403c-ac42-1dd4cfd13adc": {
+    "description": "Porção de batata básica",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:41"
+  },
+  "db5cbe39-2a5f-470e-8f48-6a42b3b06248": {
+    "description": "Porção de batata completa",
+    "quantity": 1.0,
+    "price": 30.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "f6ae377c-555e-4959-bd4b-914d42c82921": {
+    "description": "Copão de cavalo branco",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "6bafc793-6769-423e-b4d1-e16cb216d7dd": {
+    "description": "Copão de cavalo branco",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "b959db04-036a-4373-9a5b-1c8c214e47df": {
+    "description": "Copão de cavalo branco",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "4f2d42e0-5416-4428-a231-dcd05cb72f7d": {
+    "description": "Copão Jack",
+    "quantity": 1.0,
+    "price": 35.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "821dde81-e18b-49ea-b529-eb5024d46103": {
+    "description": "Copão Jack",
+    "quantity": 1.0,
+    "price": 35.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "cf8720f7-223c-4bf3-be21-47e4f53940fc": {
+    "description": "Copão Jack",
+    "quantity": 1.0,
+    "price": 35.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "6f7c2b87-56cc-4bae-99ab-2ccad37c20a4": {
+    "description": "Copão Jack",
+    "quantity": 1.0,
+    "price": 35.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "c8843177-6ec0-4dea-9e21-f7b212c118dd": {
+    "description": "Heineken",
+    "quantity": 1.0,
+    "price": 10.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "368553f9-ddc7-4a46-b907-0a3e37163798": {
+    "description": "Heineken",
+    "quantity": 1.0,
+    "price": 10.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "c2c18d7b-6be9-4bfb-bc90-22dbae1aa9a9": {
+    "description": "Heineken",
+    "quantity": 1.0,
+    "price": 10.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "50efacca-f456-41ac-a56c-f7ba083e6952": {
+    "description": "Heineken",
+    "quantity": 1.0,
+    "price": 10.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "473c9955-7bdb-4c16-b3a6-efd6c4dd30ab": {
+    "description": "Heineken",
+    "quantity": 1.0,
+    "price": 10.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "c612b64a-d09c-46b4-bbd7-fc9bae93d426": {
+    "description": "Heineken",
+    "quantity": 1.0,
+    "price": 10.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "231ed204-5454-43cd-b0eb-5130b44ca402": {
+    "description": "Heineken",
+    "quantity": 1.0,
+    "price": 10.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "b8be0e56-9c3f-4e19-bf4c-70057c10b55b": {
+    "description": "Heineken",
+    "quantity": 1.0,
+    "price": 10.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "a3870651-2859-43dc-a0a4-6a7b2f93340b": {
+    "description": "Heineken",
+    "quantity": 1.0,
+    "price": 10.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-07T20:42"
+  },
+  "0e785e3e-35c4-4cff-885b-85124ec945fc": {
+    "description": "Brahma",
+    "quantity": 1.0,
+    "price": 8.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-08T20:51"
+  },
+  "dda8e69c-4bf2-4e2a-909a-e93851877f8e": {
+    "description": "Brahma",
+    "quantity": 1.0,
+    "price": 8.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-08T20:51"
+  },
+  "44e0c654-e803-4356-98e8-fd17507c580d": {
+    "description": "Porção de batata básica",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:17"
+  },
+  "08b265c7-5842-4274-a5bb-c0df31812e26": {
+    "description": "Porção de batata básica",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:17"
+  },
+  "bce6493f-6b8d-4142-9b8c-b6327482303f": {
+    "description": "Porção de batata básica",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:17"
+  },
+  "f8595741-b16e-419a-932d-4afa38f9d0e2": {
+    "description": "Porção de batata básica",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:17"
+  },
+  "c766dd0e-a95f-494d-9abd-b952d119f6c5": {
+    "description": "Porção de batata completa",
+    "quantity": 1.0,
+    "price": 30.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:17"
+  },
+  "e7de8c35-92e9-43c1-9b66-2d9228611906": {
+    "description": "Brahma",
+    "quantity": 1.0,
+    "price": 8.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:25"
+  },
+  "4e85e7be-0216-4dd8-940c-83b100f6105b": {
+    "description": "Copão de cavalo branco",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:25"
+  },
+  "a926aeac-fdaf-4ef9-a61a-c50701d26dcf": {
+    "description": "Porção de batata básica",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:38"
+  },
+  "f371dd0b-2d10-439d-8205-dd93038f808e": {
+    "description": "Porção de batata básica",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:38"
+  },
+  "c1da66f1-4941-4d28-b134-0fed27213446": {
+    "description": "Porção de batata completa",
+    "quantity": 1.0,
+    "price": 30.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:38"
+  },
+  "1be20464-4fe3-434d-83a5-5b33a76d3658": {
+    "description": "Brahma",
+    "quantity": 1.0,
+    "price": 8.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:43"
+  },
+  "ea14ad8e-008f-48b9-994d-53e00ef5e01e": {
+    "description": "Brahma",
+    "quantity": 1.0,
+    "price": 8.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:43"
+  },
+  "43e278db-1d2e-4395-8b56-220966da9704": {
+    "description": "Brahma",
+    "quantity": 1.0,
+    "price": 8.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:43"
+  },
+  "fb5639d3-996e-47b4-a967-ba6631e8ff54": {
+    "description": "Brahma",
+    "quantity": 1.0,
+    "price": 8.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:43"
+  },
+  "ac6d18e6-671b-41af-bc1b-cc1812543744": {
+    "description": "Porção de batata básica",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T14:55"
+  },
+  "cdd144df-f0e9-49c4-922c-7511e99ea8dc": {
+    "description": "Copão Jack",
+    "quantity": 2.0,
+    "price": 35.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T15:27"
+  },
+  "8016e8e5-cd9f-4ecb-8dc7-f730d0ed7e9a": {
+    "description": "Porção de frango",
+    "quantity": 1.0,
+    "price": 40.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "created_at": "2026-07-09T15:27"
+  },
+  "e7f6aa04-73b8-4f6d-ac52-c7c47cda2a21": {
+    "description": "Porção de batata básica",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Dinheiro",
+    "note": "",
+    "customer_name": "Miguel",
+    "created_at": "2026-07-09T15:53"
+  },
+  "f8ffc85c-7e73-4dc1-a4f0-a799cd1e1bf9": {
+    "description": "Porção de frango",
+    "quantity": 1.0,
+    "price": 40.0,
+    "payment_method": "Dinheiro",
+    "note": "bem frito",
+    "customer_name": "guel",
+    "created_at": "2026-07-09T15:54"
+  },
+  "c0c3fe92-7b86-403f-865e-f1724ffce38a": {
+    "description": "Porção de carne",
+    "quantity": 1.0,
+    "price": 60.0,
+    "payment_method": "Dinheiro",
+    "note": "bem passada",
+    "customer_name": "guel",
+    "created_at": "2026-07-09T16:54"
+  },
+  "cb9907cd-8f89-4a3a-a550-a07400efed4a": {
+    "description": "Porção de frango",
+    "quantity": 1.0,
+    "price": 40.0,
+    "payment_method": "Pix",
+    "note": "sem molho",
+    "customer_name": "tiago",
+    "created_at": "2026-07-09T16:55"
+  },
+  "1ebeba35-32ae-4f26-b212-a9f7b2bd6ef8": {
+    "description": "Porção de batata básica",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Pix",
+    "note": "",
+    "customer_name": "caue",
+    "created_at": "2026-07-09T18:00"
+  },
+  "cfe5069a-98cd-42c2-902a-3a9fdbb27e9a": {
+    "description": "Porção de carne",
+    "quantity": 1.0,
+    "price": 60.0,
+    "payment_method": "Cartao",
+    "note": "Sem cebola",
+    "customer_name": "Lucas",
+    "created_at": "2026-07-09T23:22"
+  }
+}

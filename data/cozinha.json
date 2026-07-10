@@ -1,0 +1,76 @@
+{
+  "5efde2a3-582e-4450-ae26-0e7318b6760d": {
+    "description": "Porção de batata completa",
+    "quantity": 1.0,
+    "customer_name": "caue",
+    "note": "",
+    "origin": "Caderneta",
+    "status": "done",
+    "created_at": "2026-07-09T16:00",
+    "completed_at": "2026-07-09T16:00"
+  },
+  "7fd1a58b-656f-4406-a5da-c4af46819703": {
+    "description": "Porção de carne",
+    "quantity": 1.0,
+    "price": 60.0,
+    "payment_method": "",
+    "customer_name": "caue",
+    "note": "",
+    "origin": "Caderneta",
+    "status": "done",
+    "created_at": "2026-07-09T16:24",
+    "completed_at": "2026-07-09T16:25"
+  },
+  "bd932349-77f4-41a0-af2e-a30b52c9dc23": {
+    "description": "Porção de carne",
+    "quantity": 1.0,
+    "price": 60.0,
+    "payment_method": "Dinheiro",
+    "customer_name": "guel",
+    "note": "bem passada",
+    "origin": "Venda",
+    "status": "done",
+    "created_at": "2026-07-09T16:54",
+    "started_at": "2026-07-09T23:17",
+    "completed_at": "2026-07-09T23:17"
+  },
+  "fd991343-f768-4718-a850-de14add6937b": {
+    "description": "Porção de frango",
+    "quantity": 1.0,
+    "price": 40.0,
+    "payment_method": "Pix",
+    "customer_name": "tiago",
+    "note": "sem molho",
+    "origin": "Venda",
+    "status": "done",
+    "created_at": "2026-07-09T16:55",
+    "started_at": "2026-07-09T23:17",
+    "completed_at": "2026-07-10T00:07"
+  },
+  "b73d119a-1582-4e90-bef0-92ba0383d397": {
+    "description": "Porção de batata básica",
+    "quantity": 1.0,
+    "price": 25.0,
+    "payment_method": "Pix",
+    "customer_name": "caue",
+    "note": "",
+    "origin": "Venda",
+    "status": "done",
+    "created_at": "2026-07-09T18:00",
+    "started_at": "2026-07-10T00:07",
+    "completed_at": "2026-07-10T00:07"
+  },
+  "03909dcf-496c-42dc-b43c-fdb242419f8a": {
+    "description": "Porção de carne",
+    "quantity": 1.0,
+    "price": 60.0,
+    "payment_method": "Cartao",
+    "customer_name": "Lucas",
+    "note": "Sem cebola",
+    "origin": "Venda",
+    "status": "done",
+    "created_at": "2026-07-09T23:22",
+    "started_at": "2026-07-09T23:23",
+    "completed_at": "2026-07-09T23:23"
+  }
+}

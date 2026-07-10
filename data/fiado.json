@@ -1,0 +1,108 @@
+{
+  "429a7a95-4431-4e8e-8059-b4ce03d55905": {
+    "customer_name": "Hiago",
+    "note": "",
+    "created_at": "2026-07-06",
+    "items": [
+      {
+        "description": "batat completa",
+        "quantity": 1.0,
+        "price": 30.0,
+        "created_at": "2026-07-06"
+      },
+      {
+        "description": "Porção de carne",
+        "quantity": 1.0,
+        "price": 60.0,
+        "created_at": "2026-07-06T23:43"
+      },
+      {
+        "description": "Brahma",
+        "quantity": 1.0,
+        "price": 8.0,
+        "created_at": "2026-07-06T23:51"
+      },
+      {
+        "description": "Brahma",
+        "quantity": 1.0,
+        "price": 8.0,
+        "created_at": "2026-07-06T23:51"
+      },
+      {
+        "description": "Brahma",
+        "quantity": 1.0,
+        "price": 8.0,
+        "created_at": "2026-07-06T23:51"
+      },
+      {
+        "description": "Brahma",
+        "quantity": 1.0,
+        "price": 8.0,
+        "created_at": "2026-07-07T19:20"
+      },
+      {
+        "description": "Heineken",
+        "quantity": 1.0,
+        "price": 10.0,
+        "created_at": "2026-07-09T14:36"
+      },
+      {
+        "description": "Porção de batata básica",
+        "quantity": 1.0,
+        "price": 25.0,
+        "created_at": "2026-07-09T15:35"
+      }
+    ]
+  },
+  "0fca61fe-1f0e-4ee9-a86b-04b4a657f4e0": {
+    "customer_name": "caue",
+    "note": "",
+    "created_at": "2026-07-06",
+    "items": [
+      {
+        "description": "Porção de batata completa",
+        "quantity": 1.0,
+        "price": 30.0,
+        "created_at": "2026-07-09T16:00"
+      },
+      {
+        "description": "Porção de carne",
+        "quantity": 1.0,
+        "price": 60.0,
+        "created_at": "2026-07-09T16:24"
+      }
+    ]
+  },
+  "c4028b24-32fe-49fe-abaf-c3b946e43bc4": {
+    "customer_name": "JOAO",
+    "note": "",
+    "created_at": "2026-07-08",
+    "items": [
+      {
+        "description": "Copão Jack",
+        "quantity": 2.0,
+        "price": 35.0,
+        "created_at": "2026-07-08T20:51"
+      },
+      {
+        "description": "Porção de frango",
+        "quantity": 1.0,
+        "price": 40.0,
+        "created_at": "2026-07-08T20:51"
+      }
+    ]
+  },
+  "2e648b0d-31a7-4d39-9a79-398cf2352995": {
+    "customer_name": "love",
+    "note": "",
+    "created_at": "2026-07-09",
+    "items": [
+      {
+        "description": "Porção de batata básica",
+        "quantity": 1.0,
+        "price": 25.0,
+        "created_at": "2026-07-09T14:37"
+      }
+    ]
+  }
+}
