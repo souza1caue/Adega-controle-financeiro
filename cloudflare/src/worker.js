@@ -126,7 +126,7 @@ async function mutate(request, env) {
     const shouldPrint = items.some((item) => item.category === "Comidas");
     const orderId = id;
 
-    if (input.to_account) {
+    if (input.destination === "account" || input.to_account === true) {
       const accountId = input.account_id || uid();
       let account = await readRecord(db, "accounts", accountId);
       if (!account) {
