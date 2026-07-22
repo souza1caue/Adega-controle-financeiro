@@ -63,6 +63,12 @@ function quantity(value) {
   return parsed;
 }
 
+function amount(value, label, allowZero = true) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || (!allowZero && parsed === 0)) throw new Error(`Informe ${label} válido.`);
+  return Math.round(parsed * 100) / 100;
+}
+
 function isFood(item) {
   return item.category === "Comidas" || /por[cç][aã]o|batata|carne|frango|lanche|comida/i.test(item.name || "");
 }
@@ -88,7 +94,7 @@ async function cartItems(db, inputItems) {
 async function mutate(request, env) {
   const input = await request.json();
   const action = input.action;
-  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "cash.open", "cash.close"]);
+  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close"]);
   if (adminActions.has(action) && !(await isAdmin(request, env))) return reply({ error: "Acesso administrativo necessário." }, 401);
   const db = env.DB;
   const id = input.id || uid();
@@ -162,6 +168,15 @@ async function mutate(request, env) {
     await db.batch(statements);
   } else if (action === "sale.delete") {
     await db.prepare("DELETE FROM records WHERE kind='sales' AND id=?").bind(id).run();
+  } else if (action === "sale.void") {
+    required(input.reason, "a justificativa do cancelamento");
+    const sale = await readRecord(db, "sales", id);
+    if (!sale) throw new Error("Lançamento não encontrado.");
+    if (sale.voided_at) throw new Error("Este lançamento já foi cancelado.");
+    sale.voided_at = now();
+    sale.void_reason = input.reason.trim();
+    sale.voided_by = (input.responsible || "Admin").trim();
+    await putRecord(db, "sales", id, sale).run();
   } else if (action === "kitchen.printed") {
     const order = await readRecord(db, "kitchen", id);
     if (!order) throw new Error("Pedido não encontrado.");
@@ -179,16 +194,34 @@ async function mutate(request, env) {
     order.requeued_at = now();
     await putRecord(db, "kitchen", id, order).run();
   } else if (action === "cash.open") {
+    required(input.opened_by, "o responsável pela abertura");
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' LIMIT 1").first();
-    if (!open) await putRecord(db, "cash", id, { status: "open", opened_at: now(), closed_at: "" }).run();
+    if (open) throw new Error("Já existe um caixa aberto.");
+    await putRecord(db, "cash", id, { status: "open", opened_at: now(), opened_by: input.opened_by.trim(), opening_amount: amount(input.opening_amount, "o valor inicial"), opening_note: (input.note || "").trim(), movements: [], closed_at: "" }).run();
+  } else if (action === "cash.movement") {
+    const cash = await readRecord(db, "cash", id);
+    if (!cash || cash.status !== "open") throw new Error("Caixa aberto não encontrado.");
+    if (!['supply', 'withdrawal'].includes(input.type)) throw new Error("Tipo de movimentação inválido.");
+    required(input.responsible, "o responsável pela movimentação");
+    required(input.note, "o motivo da movimentação");
+    cash.movements = [...(cash.movements || []), { id: uid(), type: input.type, amount: amount(input.amount, "um valor", false), responsible: input.responsible.trim(), note: input.note.trim(), created_at: now() }];
+    await putRecord(db, "cash", id, cash).run();
   } else if (action === "cash.close") {
     const cash = await readRecord(db, "cash", id);
     if (!cash || cash.status !== "open") throw new Error("Caixa aberto não encontrado.");
+    required(input.closed_by, "o responsável pelo fechamento");
     const sales = await db.prepare("SELECT data FROM records WHERE kind='sales' AND json_extract(data,'$.cash_session_id')=?").bind(id).all();
-    const parsed = sales.results.map((row) => JSON.parse(row.data));
-    cash.status = "closed"; cash.closed_at = now(); cash.sales_count = parsed.length;
+    const parsed = sales.results.map((row) => JSON.parse(row.data)).filter((sale) => !sale.voided_at);
+    const paymentTotals = {};
+    for (const sale of parsed) paymentTotals[sale.payment_method || "Não informado"] = (paymentTotals[sale.payment_method || "Não informado"] || 0) + Number(sale.quantity || 0) * Number(sale.price || 0);
+    const supplies = (cash.movements || []).filter((movement) => movement.type === 'supply').reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
+    const withdrawals = (cash.movements || []).filter((movement) => movement.type === 'withdrawal').reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
+    const expectedCash = Number(cash.opening_amount || 0) + Number(paymentTotals.Dinheiro || 0) + supplies - withdrawals;
+    const countedCash = amount(input.counted_cash, "o dinheiro contado");
+    cash.status = "closed"; cash.closed_at = now(); cash.closed_by = input.closed_by.trim(); cash.closing_note = (input.note || "").trim(); cash.sales_count = new Set(parsed.map((sale) => sale.order_id || sale.created_at)).size;
     cash.quantity = parsed.reduce((sum, sale) => sum + Number(sale.quantity || 0), 0);
     cash.total = parsed.reduce((sum, sale) => sum + Number(sale.quantity || 0) * Number(sale.price || 0), 0);
+    cash.payment_totals = paymentTotals; cash.supplies_total = supplies; cash.withdrawals_total = withdrawals; cash.expected_cash = expectedCash; cash.counted_cash = countedCash; cash.difference = countedCash - expectedCash;
     const grouped = new Map();
     for (const sale of parsed) {
       const key = sale.description.trim().toLocaleLowerCase();
