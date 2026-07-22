@@ -88,7 +88,7 @@ async function mutate(request, env) {
     const entry = { id: uid(), description: input.description.trim(), quantity: quantity(input.quantity), price: Number(input.price), created_at: now() };
     account.items = [...(account.items || []), entry];
     const statements = [putRecord(db, "accounts", id, account)];
-    if (input.send_to_kitchen) statements.push(putRecord(db, "kitchen", uid(), { ...entry, customer_name: account.customer_name, note: (input.note || "").trim(), origin: "Caderneta", print_status: "pending", print_count: 0 }));
+    if (input.print_order || input.send_to_kitchen) statements.push(putRecord(db, "kitchen", uid(), { ...entry, customer_name: account.customer_name, note: (input.note || "").trim(), origin: "Caderneta", print_status: "pending", print_count: 0 }));
     await db.batch(statements);
   } else if (action === "account.deleteItem") {
     const account = await readRecord(db, "accounts", id);
@@ -102,8 +102,7 @@ async function mutate(request, env) {
     required(input.payment_method, "a forma de pagamento");
     const sale = { description: input.description.trim(), quantity: quantity(input.quantity), price: Number(input.price), payment_method: input.payment_method, note: (input.note || "").trim(), customer_name: (input.customer_name || "").trim(), cash_session_id: open.id, created_at: now() };
     const statements = [putRecord(db, "sales", id, sale)];
-    if (input.send_to_kitchen) {
-      required(sale.customer_name, "o cliente do pedido");
+    if (input.print_order || input.send_to_kitchen) {
       statements.push(putRecord(db, "kitchen", uid(), { ...sale, origin: "Venda", print_status: "pending", print_count: 0 }));
     }
     await db.batch(statements);
