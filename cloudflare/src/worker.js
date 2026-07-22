@@ -123,7 +123,8 @@ async function mutate(request, env) {
     const customerName = (input.customer_name || "").trim();
     const note = (input.note || "").trim();
     const statements = [];
-    const shouldPrint = items.some((item) => item.category === "Comidas");
+    const foodItems = items.filter((item) => item.category === "Comidas");
+    const shouldPrint = foodItems.length > 0;
     const orderId = id;
 
     if (input.destination === "account" || input.to_account === true) {
@@ -136,7 +137,7 @@ async function mutate(request, env) {
       const accountEntries = items.map((item) => ({ id: uid(), description: item.description, quantity: item.quantity, price: item.price, created_at: createdAt, order_id: orderId }));
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
-      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items, description: `${items.length} itens`, quantity: items.reduce((sum, item) => sum + item.quantity, 0), customer_name: account.customer_name, note, origin: "Caderneta", created_at: createdAt, print_status: "pending", print_count: 0 }));
+      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: account.customer_name, note, origin: "Caderneta", created_at: createdAt, print_status: "pending", print_count: 0 }));
     } else {
       const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
       if (!open) throw new Error("Abra o caixa no Admin antes de registrar a venda direta.");
@@ -145,7 +146,7 @@ async function mutate(request, env) {
         const saleId = uid();
         statements.push(putRecord(db, "sales", saleId, { description: item.description, quantity: item.quantity, price: item.price, payment_method: input.payment_method, note, customer_name: customerName, cash_session_id: open.id, order_id: orderId, created_at: createdAt }));
       }
-      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items, description: `${items.length} itens`, quantity: items.reduce((sum, item) => sum + item.quantity, 0), customer_name: customerName, note, origin: "Venda", payment_method: input.payment_method, created_at: createdAt, print_status: "pending", print_count: 0 }));
+      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: customerName, note, origin: "Venda", payment_method: input.payment_method, created_at: createdAt, print_status: "pending", print_count: 0 }));
     }
     await db.batch(statements);
   } else if (action === "sale.create") {
