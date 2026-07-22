@@ -63,6 +63,28 @@ function quantity(value) {
   return parsed;
 }
 
+function isFood(item) {
+  return item.category === "Comidas" || /por[cç][aã]o|batata|carne|frango|lanche|comida/i.test(item.name || "");
+}
+
+async function cartItems(db, inputItems) {
+  if (!Array.isArray(inputItems) || !inputItems.length) throw new Error("Adicione itens ao pedido.");
+  if (inputItems.length > 30) throw new Error("O pedido excedeu o limite de 30 itens diferentes.");
+  const result = [];
+  for (const inputItem of inputItems) {
+    const menuItem = await readRecord(db, "menu", inputItem.menu_id);
+    if (!menuItem) throw new Error("Um item do pedido não está mais disponível no cardápio.");
+    result.push({
+      menu_id: inputItem.menu_id,
+      description: menuItem.name,
+      quantity: quantity(inputItem.quantity),
+      price: Number(menuItem.price),
+      category: isFood(menuItem) ? "Comidas" : "Bebidas",
+    });
+  }
+  return result;
+}
+
 async function mutate(request, env) {
   const input = await request.json();
   const action = input.action;
@@ -95,6 +117,37 @@ async function mutate(request, env) {
     if (!account) throw new Error("Conta não encontrada.");
     account.items = (account.items || []).filter((item, index) => item.id ? item.id !== input.item_id : index !== Number(input.index));
     await putRecord(db, "accounts", id, account).run();
+  } else if (action === "sale.checkout") {
+    const items = await cartItems(db, input.items);
+    const createdAt = now();
+    const customerName = (input.customer_name || "").trim();
+    const note = (input.note || "").trim();
+    const statements = [];
+    const shouldPrint = items.some((item) => item.category === "Comidas");
+    const orderId = id;
+
+    if (input.to_account) {
+      const accountId = input.account_id || uid();
+      let account = await readRecord(db, "accounts", accountId);
+      if (!account) {
+        required(customerName, "o cliente para criar a caderneta");
+        account = { customer_name: customerName, note: "", created_at: createdAt.slice(0, 10), items: [] };
+      }
+      const accountEntries = items.map((item) => ({ id: uid(), description: item.description, quantity: item.quantity, price: item.price, created_at: createdAt, order_id: orderId }));
+      account.items = [...(account.items || []), ...accountEntries];
+      statements.push(putRecord(db, "accounts", accountId, account));
+      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items, description: `${items.length} itens`, quantity: items.reduce((sum, item) => sum + item.quantity, 0), customer_name: account.customer_name, note, origin: "Caderneta", created_at: createdAt, print_status: "pending", print_count: 0 }));
+    } else {
+      const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+      if (!open) throw new Error("Abra o caixa no Admin antes de registrar a venda direta.");
+      required(input.payment_method, "a forma de pagamento");
+      for (const item of items) {
+        const saleId = uid();
+        statements.push(putRecord(db, "sales", saleId, { description: item.description, quantity: item.quantity, price: item.price, payment_method: input.payment_method, note, customer_name: customerName, cash_session_id: open.id, order_id: orderId, created_at: createdAt }));
+      }
+      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items, description: `${items.length} itens`, quantity: items.reduce((sum, item) => sum + item.quantity, 0), customer_name: customerName, note, origin: "Venda", payment_method: input.payment_method, created_at: createdAt, print_status: "pending", print_count: 0 }));
+    }
+    await db.batch(statements);
   } else if (action === "sale.create") {
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
     if (!open) throw new Error("Abra o caixa no Admin antes de registrar saídas.");
@@ -154,8 +207,8 @@ export default {
     const url = new URL(request.url);
     try {
       if (url.pathname === "/api/state" && request.method === "GET") return reply(await state(env.DB));
-      if (url.pathname === "/api/login" && request.method === "POST") return login(request, env);
-      if (url.pathname === "/api/mutate" && request.method === "POST") return mutate(request, env);
+      if (url.pathname === "/api/login" && request.method === "POST") return await login(request, env);
+      if (url.pathname === "/api/mutate" && request.method === "POST") return await mutate(request, env);
       if (url.pathname.startsWith("/api/")) return reply({ error: "Rota não encontrada." }, 404);
       return env.ASSETS.fetch(request);
     } catch (error) {
