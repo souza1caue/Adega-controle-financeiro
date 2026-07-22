@@ -1,5 +1,5 @@
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
-const KINDS = ["menu", "accounts", "sales", "kitchen", "cash"];
+const KINDS = ["menu", "accounts", "account_payments", "sales", "kitchen", "cash"];
 
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 const now = () => new Date().toISOString();
@@ -69,6 +69,12 @@ function amount(value, label, allowZero = true) {
   return Math.round(parsed * 100) / 100;
 }
 
+function accountBalance(account) {
+  const charges = (account.items || []).filter((item) => !item.cancelled_at)
+    .reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.price || 0), 0);
+  return Math.max(0, Math.round((charges - Number(account.payments_total || 0)) * 100) / 100);
+}
+
 function isFood(item) {
   return item.category === "Comidas" || /por[cç][aã]o|batata|carne|frango|lanche|comida/i.test(item.name || "");
 }
@@ -109,21 +115,59 @@ async function mutate(request, env) {
     await db.prepare("DELETE FROM records WHERE kind='menu' AND id=?").bind(id).run();
   } else if (action === "account.create") {
     required(input.customer_name, "o nome do cliente");
-    await putRecord(db, "accounts", id, { customer_name: input.customer_name.trim(), note: (input.note || "").trim(), created_at: now().slice(0, 10), items: [] }).run();
+    await putRecord(db, "accounts", id, { customer_name: input.customer_name.trim(), note: (input.note || "").trim(), created_at: now().slice(0, 10), items: [], payments_total: 0 }).run();
   } else if (action === "account.addItem") {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Conta não encontrada.");
     required(input.description, "o item");
-    const entry = { id: uid(), description: input.description.trim(), quantity: quantity(input.quantity), price: Number(input.price), created_at: now() };
+    const createdAt = now();
+    const orderId = uid();
+    const entry = { id: uid(), description: input.description.trim(), quantity: quantity(input.quantity), price: amount(input.price, "o preço"), created_at: createdAt, order_id: orderId };
     account.items = [...(account.items || []), entry];
-    const statements = [putRecord(db, "accounts", id, account)];
+    const statements = [
+      putRecord(db, "accounts", id, account),
+      putRecord(db, "sales", uid(), { description: entry.description, quantity: entry.quantity, price: entry.price, customer_name: account.customer_name, payment_method: "Caderneta", account_id: id, account_item_id: entry.id, order_id: orderId, created_at: createdAt }),
+    ];
     if (input.print_order || input.send_to_kitchen) statements.push(putRecord(db, "kitchen", uid(), { ...entry, customer_name: account.customer_name, note: (input.note || "").trim(), origin: "Caderneta", print_status: "pending", print_count: 0 }));
     await db.batch(statements);
-  } else if (action === "account.deleteItem") {
+  } else if (action === "account.cancelItem") {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Conta não encontrada.");
-    account.items = (account.items || []).filter((item, index) => item.id ? item.id !== input.item_id : index !== Number(input.index));
-    await putRecord(db, "accounts", id, account).run();
+    required(input.reason, "o motivo do cancelamento");
+    required(input.responsible, "o responsável pelo cancelamento");
+    const item = (account.items || []).find((entry, index) => entry.id ? entry.id === input.item_id : index === Number(input.index));
+    if (!item) throw new Error("Item não encontrado.");
+    if (item.cancelled_at) throw new Error("Este item já foi cancelado.");
+    const itemTotal = Number(item.quantity || 0) * Number(item.price || 0);
+    if (itemTotal > accountBalance(account) + 0.001) throw new Error("Não é possível cancelar um consumo que já foi recebido.");
+    item.cancelled_at = now(); item.cancel_reason = input.reason.trim(); item.cancelled_by = input.responsible.trim();
+    const statements = [putRecord(db, "accounts", id, account)];
+    if (item.id) {
+      const related = await db.prepare("SELECT id,data FROM records WHERE kind='sales' AND json_extract(data,'$.account_item_id')=?").bind(item.id).all();
+      for (const row of related.results) {
+        const sale = JSON.parse(row.data);
+        sale.voided_at = item.cancelled_at; sale.void_reason = item.cancel_reason; sale.voided_by = item.cancelled_by;
+        statements.push(putRecord(db, "sales", row.id, sale));
+      }
+    }
+    await db.batch(statements);
+  } else if (action === "account.receivePayment") {
+    const account = await readRecord(db, "accounts", id);
+    if (!account) throw new Error("Conta não encontrada.");
+    const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!open) throw new Error("Abra o caixa antes de receber uma caderneta.");
+    required(input.payment_method, "a forma de pagamento");
+    if (!["Dinheiro", "Pix", "Cartão"].includes(input.payment_method)) throw new Error("Forma de pagamento inválida.");
+    required(input.responsible, "o responsável pelo recebimento");
+    const received = amount(input.amount, "um valor", false);
+    const balance = accountBalance(account);
+    if (received > balance + 0.001) throw new Error(`O valor informado é maior que o saldo de R$ ${balance.toFixed(2).replace('.', ',')}.`);
+    const paymentId = uid();
+    const createdAt = now();
+    const payment = { account_id: id, customer_name: account.customer_name, amount: received, payment_method: input.payment_method, responsible: input.responsible.trim(), note: (input.note || "").trim(), cash_session_id: open.id, created_at: createdAt };
+    account.payments_total = Math.round((Number(account.payments_total || 0) + received) * 100) / 100;
+    account.last_payment_at = createdAt;
+    await db.batch([putRecord(db, "accounts", id, account), putRecord(db, "account_payments", paymentId, payment)]);
   } else if (action === "sale.checkout") {
     const items = await cartItems(db, input.items);
     const createdAt = now();
@@ -139,11 +183,12 @@ async function mutate(request, env) {
       let account = await readRecord(db, "accounts", accountId);
       if (!account) {
         required(customerName, "o cliente para criar a caderneta");
-        account = { customer_name: customerName, note: "", created_at: createdAt.slice(0, 10), items: [] };
+        account = { customer_name: customerName, note: "", created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
       }
       const accountEntries = items.map((item) => ({ id: uid(), description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId }));
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
+      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: account.customer_name, payment_method: "Caderneta", account_id: accountId, account_item_id: entry.id, order_id: orderId, created_at: createdAt }));
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: account.customer_name, note, origin: "Caderneta", created_at: createdAt, print_status: "pending", print_count: 0 }));
     } else {
       const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
@@ -151,7 +196,7 @@ async function mutate(request, env) {
       required(input.payment_method, "a forma de pagamento");
       for (const item of items) {
         const saleId = uid();
-        statements.push(putRecord(db, "sales", saleId, { description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, cash_session_id: open.id, order_id: orderId, created_at: createdAt }));
+        statements.push(putRecord(db, "sales", saleId, { description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, payment_method: input.payment_method, cash_session_id: open.id, order_id: orderId, created_at: createdAt }));
       }
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: customerName, note, origin: "Venda", payment_method: input.payment_method, created_at: createdAt, print_status: "pending", print_count: 0 }));
     }
@@ -215,13 +260,16 @@ async function mutate(request, env) {
     const parsed = sales.results.map((row) => JSON.parse(row.data)).filter((sale) => !sale.voided_at);
     const paymentTotals = {};
     for (const sale of parsed) paymentTotals[sale.payment_method || "Não informado"] = (paymentTotals[sale.payment_method || "Não informado"] || 0) + Number(sale.quantity || 0) * Number(sale.price || 0);
+    const receiptRows = await db.prepare("SELECT data FROM records WHERE kind='account_payments' AND json_extract(data,'$.cash_session_id')=?").bind(id).all();
+    const receipts = receiptRows.results.map((row) => JSON.parse(row.data)).filter((payment) => !payment.voided_at);
+    for (const payment of receipts) paymentTotals[payment.payment_method] = (paymentTotals[payment.payment_method] || 0) + Number(payment.amount || 0);
     const supplies = (cash.movements || []).filter((movement) => movement.type === 'supply').reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
     const withdrawals = (cash.movements || []).filter((movement) => movement.type === 'withdrawal').reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
     const expectedCash = Number(cash.opening_amount || 0) + Number(paymentTotals.Dinheiro || 0) + supplies - withdrawals;
     const countedCash = amount(input.counted_cash, "o dinheiro contado");
-    cash.status = "closed"; cash.closed_at = now(); cash.closed_by = input.closed_by.trim(); cash.closing_note = (input.note || "").trim(); cash.sales_count = new Set(parsed.map((sale) => sale.order_id || sale.created_at)).size;
+    cash.status = "closed"; cash.closed_at = now(); cash.closed_by = input.closed_by.trim(); cash.closing_note = (input.note || "").trim(); cash.sales_count = new Set(parsed.map((sale) => sale.order_id || sale.created_at)).size; cash.account_payments_count = receipts.length;
     cash.quantity = parsed.reduce((sum, sale) => sum + Number(sale.quantity || 0), 0);
-    cash.total = parsed.reduce((sum, sale) => sum + Number(sale.quantity || 0) * Number(sale.price || 0), 0);
+    cash.total = parsed.reduce((sum, sale) => sum + Number(sale.quantity || 0) * Number(sale.price || 0), 0) + receipts.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
     cash.payment_totals = paymentTotals; cash.supplies_total = supplies; cash.withdrawals_total = withdrawals; cash.expected_cash = expectedCash; cash.counted_cash = countedCash; cash.difference = countedCash - expectedCash;
     const grouped = new Map();
     for (const sale of parsed) {
