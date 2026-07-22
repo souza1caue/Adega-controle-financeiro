@@ -86,6 +86,7 @@ async function cartItems(db, inputItems) {
       quantity: quantity(inputItem.quantity),
       price: Number(menuItem.price),
       category: isFood(menuItem) ? "Comidas" : "Bebidas",
+      note: (inputItem.note || "").trim(),
     });
   }
   return result;
@@ -140,7 +141,7 @@ async function mutate(request, env) {
         required(customerName, "o cliente para criar a caderneta");
         account = { customer_name: customerName, note: "", created_at: createdAt.slice(0, 10), items: [] };
       }
-      const accountEntries = items.map((item) => ({ id: uid(), description: item.description, quantity: item.quantity, price: item.price, created_at: createdAt, order_id: orderId }));
+      const accountEntries = items.map((item) => ({ id: uid(), description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId }));
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: account.customer_name, note, origin: "Caderneta", created_at: createdAt, print_status: "pending", print_count: 0 }));
@@ -150,7 +151,7 @@ async function mutate(request, env) {
       required(input.payment_method, "a forma de pagamento");
       for (const item of items) {
         const saleId = uid();
-        statements.push(putRecord(db, "sales", saleId, { description: item.description, quantity: item.quantity, price: item.price, payment_method: input.payment_method, note, customer_name: customerName, cash_session_id: open.id, order_id: orderId, created_at: createdAt }));
+        statements.push(putRecord(db, "sales", saleId, { description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, cash_session_id: open.id, order_id: orderId, created_at: createdAt }));
       }
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: customerName, note, origin: "Venda", payment_method: input.payment_method, created_at: createdAt, print_status: "pending", print_count: 0 }));
     }
