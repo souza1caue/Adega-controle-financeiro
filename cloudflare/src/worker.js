@@ -57,6 +57,12 @@ function required(value, label) {
   if (!String(value ?? "").trim()) throw new Error(`Informe ${label}.`);
 }
 
+function quantity(value) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) throw new Error("Informe uma quantidade inteira maior que zero.");
+  return parsed;
+}
+
 async function mutate(request, env) {
   const input = await request.json();
   const action = input.action;
@@ -79,7 +85,7 @@ async function mutate(request, env) {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Conta não encontrada.");
     required(input.description, "o item");
-    const entry = { id: uid(), description: input.description.trim(), quantity: Number(input.quantity), price: Number(input.price), created_at: now() };
+    const entry = { id: uid(), description: input.description.trim(), quantity: quantity(input.quantity), price: Number(input.price), created_at: now() };
     account.items = [...(account.items || []), entry];
     const statements = [putRecord(db, "accounts", id, account)];
     if (input.send_to_kitchen) statements.push(putRecord(db, "kitchen", uid(), { ...entry, customer_name: account.customer_name, note: (input.note || "").trim(), origin: "Caderneta", print_status: "pending", print_count: 0 }));
@@ -94,7 +100,7 @@ async function mutate(request, env) {
     if (!open) throw new Error("Abra o caixa no Admin antes de registrar saídas.");
     required(input.description, "o item");
     required(input.payment_method, "a forma de pagamento");
-    const sale = { description: input.description.trim(), quantity: Number(input.quantity), price: Number(input.price), payment_method: input.payment_method, note: (input.note || "").trim(), customer_name: (input.customer_name || "").trim(), cash_session_id: open.id, created_at: now() };
+    const sale = { description: input.description.trim(), quantity: quantity(input.quantity), price: Number(input.price), payment_method: input.payment_method, note: (input.note || "").trim(), customer_name: (input.customer_name || "").trim(), cash_session_id: open.id, created_at: now() };
     const statements = [putRecord(db, "sales", id, sale)];
     if (input.send_to_kitchen) {
       required(sale.customer_name, "o cliente do pedido");
