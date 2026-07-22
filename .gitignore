@@ -4,3 +4,6 @@ memory-bank/
 *.py[cod]
 .streamlit/secrets.toml
 .env
+cloudflare/.wrangler/
+cloudflare/.dev.vars
+cloudflare/seed.sql

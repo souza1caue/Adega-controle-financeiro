@@ -1,0 +1,18 @@
+name = "controle-adega"
+main = "src/worker.js"
+compatibility_date = "2026-07-20"
+workers_dev = true
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "controle-adega"
+database_id = "574797ee-67fc-4381-9294-6fe0e31da9eb"
+migrations_dir = "migrations"
+
+[vars]
+APP_TIMEZONE = "America/Sao_Paulo"
