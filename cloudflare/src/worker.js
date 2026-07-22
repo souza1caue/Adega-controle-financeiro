@@ -82,7 +82,7 @@ async function mutate(request, env) {
     const entry = { id: uid(), description: input.description.trim(), quantity: Number(input.quantity), price: Number(input.price), created_at: now() };
     account.items = [...(account.items || []), entry];
     const statements = [putRecord(db, "accounts", id, account)];
-    if (input.send_to_kitchen) statements.push(putRecord(db, "kitchen", uid(), { ...entry, customer_name: account.customer_name, note: (input.note || "").trim(), origin: "Caderneta", status: "pending" }));
+    if (input.send_to_kitchen) statements.push(putRecord(db, "kitchen", uid(), { ...entry, customer_name: account.customer_name, note: (input.note || "").trim(), origin: "Caderneta", print_status: "pending", print_count: 0 }));
     await db.batch(statements);
   } else if (action === "account.deleteItem") {
     const account = await readRecord(db, "accounts", id);
@@ -98,18 +98,26 @@ async function mutate(request, env) {
     const statements = [putRecord(db, "sales", id, sale)];
     if (input.send_to_kitchen) {
       required(sale.customer_name, "o cliente do pedido");
-      statements.push(putRecord(db, "kitchen", uid(), { ...sale, origin: "Venda", status: "pending" }));
+      statements.push(putRecord(db, "kitchen", uid(), { ...sale, origin: "Venda", print_status: "pending", print_count: 0 }));
     }
     await db.batch(statements);
   } else if (action === "sale.delete") {
     await db.prepare("DELETE FROM records WHERE kind='sales' AND id=?").bind(id).run();
-  } else if (action === "kitchen.status") {
+  } else if (action === "kitchen.printed") {
     const order = await readRecord(db, "kitchen", id);
     if (!order) throw new Error("Pedido não encontrado.");
-    const allowed = { started: "started_at", ready: "completed_at", delivered: "delivered_at" };
-    if (!allowed[input.status]) throw new Error("Estado inválido.");
-    order.status = input.status;
-    order[allowed[input.status]] = now();
+    if (!order.print_status) throw new Error("Pedido anterior ao sistema de impressão.");
+    order.print_status = "printed";
+    order.printed_at = now();
+    order.print_count = Number(order.print_count || 0) + 1;
+    order.last_print_mode = input.mode === "automatic" ? "automatic" : "test";
+    await putRecord(db, "kitchen", id, order).run();
+  } else if (action === "kitchen.requeue") {
+    const order = await readRecord(db, "kitchen", id);
+    if (!order) throw new Error("Pedido não encontrado.");
+    if (!order.print_status) throw new Error("Pedido anterior ao sistema de impressão.");
+    order.print_status = "pending";
+    order.requeued_at = now();
     await putRecord(db, "kitchen", id, order).run();
   } else if (action === "cash.open") {
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' LIMIT 1").first();
