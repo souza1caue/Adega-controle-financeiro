@@ -1,5 +1,5 @@
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
-const KINDS = ["menu", "accounts", "account_payments", "sales", "kitchen", "cash"];
+const KINDS = ["menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_movements"];
 
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 const now = () => new Date().toISOString();
@@ -69,6 +69,29 @@ function amount(value, label, allowZero = true) {
   return Math.round(parsed * 100) / 100;
 }
 
+function stockNumber(value, label = "a quantidade", allowZero = true) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || (!allowZero && parsed === 0)) throw new Error(`Informe ${label} válido.`);
+  return Math.round(parsed * 1000) / 1000;
+}
+
+function stockMovement(db, menuId, product, type, quantityValue, details = {}) {
+  const movementQuantity = stockNumber(quantityValue, "a quantidade da movimentação", false);
+  const before = Number(product.stock_quantity || 0);
+  const signed = ["sale", "loss", "out"].includes(type) ? -movementQuantity : movementQuantity;
+  const after = Math.round((before + signed) * 1000) / 1000;
+  if (after < 0) throw new Error(`Estoque insuficiente para ${product.name}. Disponível: ${before}.`);
+  product.stock_quantity = after;
+  product.stock_updated_at = now();
+  return putRecord(db, "stock_movements", uid(), {
+    menu_id: menuId, product_name: product.name, type, quantity: movementQuantity,
+    signed_quantity: signed, balance_before: before, balance_after: after,
+    unit_cost: Number(details.unit_cost ?? product.cost_price ?? 0),
+    reason: (details.reason || "").trim(), responsible: (details.responsible || "").trim(),
+    reference_id: details.reference_id || "", created_at: now(),
+  });
+}
+
 function accountBalance(account) {
   const charges = (account.items || []).filter((item) => !item.cancelled_at)
     .reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.price || 0), 0);
@@ -93,6 +116,8 @@ async function cartItems(db, inputItems) {
       price: Number(menuItem.price),
       category: isFood(menuItem) ? "Comidas" : "Bebidas",
       note: (inputItem.note || "").trim(),
+      stock_controlled: menuItem.stock_controlled === true,
+      menu_item: menuItem,
     });
   }
   return result;
@@ -101,7 +126,7 @@ async function cartItems(db, inputItems) {
 async function mutate(request, env) {
   const input = await request.json();
   const action = input.action;
-  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close"]);
+  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move"]);
   if (adminActions.has(action) && !(await isAdmin(request, env))) return reply({ error: "Acesso administrativo necessário." }, 401);
   const db = env.DB;
   const id = input.id || uid();
@@ -111,6 +136,33 @@ async function mutate(request, env) {
     const item = { ...(action === "menu.update" ? await readRecord(db, "menu", id) : {}), name: input.name.trim(), price: Number(input.price), category: input.category === "Comidas" ? "Comidas" : "Bebidas" };
     item[action === "menu.create" ? "created_at" : "updated_at"] = now();
     await putRecord(db, "menu", id, item).run();
+  } else if (action === "stock.configure") {
+    const item = await readRecord(db, "menu", id);
+    if (!item) throw new Error("Produto não encontrado.");
+    item.stock_controlled = input.stock_controlled === true || input.stock_controlled === "true";
+    item.stock_minimum = stockNumber(input.stock_minimum || 0, "o estoque mínimo");
+    item.cost_price = amount(input.cost_price || 0, "o custo");
+    item.sku = (input.sku || "").trim();
+    item.barcode = (input.barcode || "").trim();
+    item.supplier = (input.supplier || "").trim();
+    item.unit = (input.unit || "un").trim();
+    item.stock_updated_at = now();
+    await putRecord(db, "menu", id, item).run();
+  } else if (action === "stock.move") {
+    const item = await readRecord(db, "menu", id);
+    if (!item) throw new Error("Produto não encontrado.");
+    if (!item.stock_controlled) throw new Error("Ative o controle de estoque deste produto primeiro.");
+    if (!["in", "out", "loss", "adjustment"].includes(input.type)) throw new Error("Tipo de movimentação inválido.");
+    required(input.responsible, "o responsável");
+    required(input.reason, "o motivo");
+    const current = Number(item.stock_quantity || 0);
+    const desired = input.type === "adjustment" ? stockNumber(input.new_balance, "o novo saldo") : null;
+    const movementType = input.type === "adjustment" ? (desired >= current ? "adjustment_in" : "out") : input.type;
+    const movementQty = input.type === "adjustment" ? Math.abs(desired - current) : input.quantity;
+    if (Number(movementQty) === 0) throw new Error("O novo saldo é igual ao saldo atual.");
+    if (input.type === "in" && input.unit_cost !== "" && input.unit_cost != null) item.cost_price = amount(input.unit_cost, "o custo");
+    const movement = stockMovement(db, id, item, movementType, movementQty, input);
+    await db.batch([putRecord(db, "menu", id, item), movement]);
   } else if (action === "menu.delete") {
     await db.prepare("DELETE FROM records WHERE kind='menu' AND id=?").bind(id).run();
   } else if (action === "account.create") {
@@ -122,12 +174,19 @@ async function mutate(request, env) {
     required(input.description, "o item");
     const createdAt = now();
     const orderId = uid();
-    const entry = { id: uid(), description: input.description.trim(), quantity: quantity(input.quantity), price: amount(input.price, "o preço"), created_at: createdAt, order_id: orderId };
+    const entry = { id: uid(), menu_id: input.menu_id || "", description: input.description.trim(), quantity: quantity(input.quantity), price: amount(input.price, "o preço"), created_at: createdAt, order_id: orderId };
     account.items = [...(account.items || []), entry];
     const statements = [
       putRecord(db, "accounts", id, account),
-      putRecord(db, "sales", uid(), { description: entry.description, quantity: entry.quantity, price: entry.price, customer_name: account.customer_name, payment_method: "Caderneta", account_id: id, account_item_id: entry.id, order_id: orderId, created_at: createdAt }),
+      putRecord(db, "sales", uid(), { menu_id: entry.menu_id, description: entry.description, quantity: entry.quantity, price: entry.price, customer_name: account.customer_name, payment_method: "Caderneta", account_id: id, account_item_id: entry.id, order_id: orderId, created_at: createdAt }),
     ];
+    if (entry.menu_id) {
+      const product = await readRecord(db, "menu", entry.menu_id);
+      if (product?.stock_controlled) {
+        const movement = stockMovement(db, entry.menu_id, product, "sale", entry.quantity, { reason: "Consumo em caderneta", responsible: "Sistema", reference_id: orderId });
+        statements.push(putRecord(db, "menu", entry.menu_id, product), movement);
+      }
+    }
     if (input.print_order || input.send_to_kitchen) statements.push(putRecord(db, "kitchen", uid(), { ...entry, customer_name: account.customer_name, note: (input.note || "").trim(), origin: "Caderneta", print_status: "pending", print_count: 0 }));
     await db.batch(statements);
   } else if (action === "account.cancelItem") {
@@ -148,6 +207,13 @@ async function mutate(request, env) {
         const sale = JSON.parse(row.data);
         sale.voided_at = item.cancelled_at; sale.void_reason = item.cancel_reason; sale.voided_by = item.cancelled_by;
         statements.push(putRecord(db, "sales", row.id, sale));
+      }
+    }
+    if (item.menu_id) {
+      const product = await readRecord(db, "menu", item.menu_id);
+      if (product?.stock_controlled) {
+        const movement = stockMovement(db, item.menu_id, product, "return", item.quantity, { reason: `Cancelamento: ${item.cancel_reason}`, responsible: item.cancelled_by, reference_id: item.order_id });
+        statements.push(putRecord(db, "menu", item.menu_id, product), movement);
       }
     }
     await db.batch(statements);
@@ -185,10 +251,10 @@ async function mutate(request, env) {
         required(customerName, "o cliente para criar a caderneta");
         account = { customer_name: customerName, note: "", created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
       }
-      const accountEntries = items.map((item) => ({ id: uid(), description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId }));
+      const accountEntries = items.map((item) => ({ id: uid(), menu_id: item.menu_id, description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId }));
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
-      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: account.customer_name, payment_method: "Caderneta", account_id: accountId, account_item_id: entry.id, order_id: orderId, created_at: createdAt }));
+      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: account.customer_name, payment_method: "Caderneta", account_id: accountId, account_item_id: entry.id, order_id: orderId, created_at: createdAt }));
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: account.customer_name, note, origin: "Caderneta", created_at: createdAt, print_status: "pending", print_count: 0 }));
     } else {
       const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
@@ -196,9 +262,14 @@ async function mutate(request, env) {
       required(input.payment_method, "a forma de pagamento");
       for (const item of items) {
         const saleId = uid();
-        statements.push(putRecord(db, "sales", saleId, { description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, payment_method: input.payment_method, cash_session_id: open.id, order_id: orderId, created_at: createdAt }));
+        statements.push(putRecord(db, "sales", saleId, { menu_id: item.menu_id, description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, payment_method: input.payment_method, cash_session_id: open.id, order_id: orderId, created_at: createdAt }));
       }
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: customerName, note, origin: "Venda", payment_method: input.payment_method, created_at: createdAt, print_status: "pending", print_count: 0 }));
+    }
+    for (const item of items) {
+      if (!item.stock_controlled) continue;
+      const movement = stockMovement(db, item.menu_id, item.menu_item, "sale", item.quantity, { reason: "Venda", responsible: "Sistema", reference_id: orderId });
+      statements.push(putRecord(db, "menu", item.menu_id, item.menu_item), movement);
     }
     await db.batch(statements);
   } else if (action === "sale.create") {
@@ -219,10 +290,21 @@ async function mutate(request, env) {
     const sale = await readRecord(db, "sales", id);
     if (!sale) throw new Error("Lançamento não encontrado.");
     if (sale.voided_at) throw new Error("Este lançamento já foi cancelado.");
+    if (sale.account_id) throw new Error("Cancele este consumo diretamente na caderneta para manter o saldo e o estoque consistentes.");
     sale.voided_at = now();
     sale.void_reason = input.reason.trim();
     sale.voided_by = (input.responsible || "Admin").trim();
-    await putRecord(db, "sales", id, sale).run();
+    const statements = [];
+    if (sale.menu_id && !sale.stock_restored_at) {
+      const product = await readRecord(db, "menu", sale.menu_id);
+      if (product?.stock_controlled) {
+        const movement = stockMovement(db, sale.menu_id, product, "return", sale.quantity, { reason: `Cancelamento de venda: ${sale.void_reason}`, responsible: sale.voided_by, reference_id: sale.order_id || id });
+        statements.push(putRecord(db, "menu", sale.menu_id, product), movement);
+        sale.stock_restored_at = now();
+      }
+    }
+    statements.unshift(putRecord(db, "sales", id, sale));
+    await db.batch(statements);
   } else if (action === "kitchen.printed") {
     const order = await readRecord(db, "kitchen", id);
     if (!order) throw new Error("Pedido não encontrado.");
