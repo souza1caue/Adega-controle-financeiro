@@ -93,7 +93,9 @@ function recipeQuantity(value, fromUnit, stockUnit) {
 
 async function recipeUsage(db, menuId, multiplier = 1) {
   const recipe = await readRecord(db, "recipes", menuId);
-  if (!Array.isArray(recipe?.components) || !recipe.components.length) throw new Error("Este item do cardápio não possui ficha técnica e não pode ser vendido.");
+  // Compatibilidade: itens ainda não configurados continuam vendáveis, porém
+  // não movimentam estoque até receberem uma ficha técnica.
+  if (!Array.isArray(recipe?.components) || !recipe.components.length) return [];
   const usage = [];
   for (const component of recipe.components) {
     const stockItem = await readRecord(db, "stock_items", component.stock_item_id);
