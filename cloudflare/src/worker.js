@@ -310,7 +310,7 @@ async function mutate(request, env) {
         statements.push(putRecord(db, "menu", entry.menu_id, product), movement);
       }
     }
-    if (input.print_order || input.send_to_kitchen) statements.push(putRecord(db, "kitchen", uid(), { ...entry, customer_name: account.customer_name, note: (input.note || "").trim(), origin: "Caderneta", print_status: "pending", print_count: 0 }));
+    if (input.print_order || input.send_to_kitchen) statements.push(putRecord(db, "kitchen", uid(), { ...entry, customer_name: account.customer_name, note: (input.note || "").trim(), origin: "Caderneta", status: "pending", print_status: "pending", print_count: 0 }));
     await db.batch(statements);
   } else if (action === "account.cancelItem") {
     const account = await readRecord(db, "accounts", id);
@@ -384,7 +384,7 @@ async function mutate(request, env) {
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
       for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: account.customer_name, payment_method: "Caderneta", account_id: accountId, account_item_id: entry.id, order_id: orderId, created_at: createdAt }));
-      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: account.customer_name, note, origin: "Caderneta", created_at: createdAt, print_status: "pending", print_count: 0 }));
+      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: account.customer_name, note, origin: "Caderneta", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0 }));
     } else {
       const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
       if (!open) throw new Error("Abra o caixa no Admin antes de registrar a venda direta.");
@@ -393,7 +393,7 @@ async function mutate(request, env) {
         const saleId = uid();
         statements.push(putRecord(db, "sales", saleId, { menu_id: item.menu_id, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, payment_method: input.payment_method, cash_session_id: open.id, order_id: orderId, created_at: createdAt }));
       }
-      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: customerName, note, origin: "Venda", payment_method: input.payment_method, created_at: createdAt, print_status: "pending", print_count: 0 }));
+      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: customerName, note, origin: "Venda", payment_method: input.payment_method, created_at: createdAt, status: "pending", print_status: "pending", print_count: 0 }));
     }
     const requirements = new Map();
     for (const item of items) for (const usage of item.stock_usage) requirements.set(usage.stock_item_id, (requirements.get(usage.stock_item_id) || 0) + Number(usage.quantity) * item.quantity);
@@ -418,7 +418,7 @@ async function mutate(request, env) {
     const sale = { description: input.description.trim(), quantity: quantity(input.quantity), price: Number(input.price), payment_method: input.payment_method, note: (input.note || "").trim(), customer_name: (input.customer_name || "").trim(), cash_session_id: open.id, created_at: now() };
     const statements = [putRecord(db, "sales", id, sale)];
     if (input.print_order || input.send_to_kitchen) {
-      statements.push(putRecord(db, "kitchen", uid(), { ...sale, origin: "Venda", print_status: "pending", print_count: 0 }));
+      statements.push(putRecord(db, "kitchen", uid(), { ...sale, origin: "Venda", status: "pending", print_status: "pending", print_count: 0 }));
     }
     await db.batch(statements);
   } else if (action === "sale.delete") {
@@ -465,6 +465,14 @@ async function mutate(request, env) {
     if (!order.print_status) throw new Error("Pedido anterior ao sistema de impressão.");
     order.print_status = "pending";
     order.requeued_at = now();
+    await putRecord(db, "kitchen", id, order).run();
+  } else if (action === "kitchen.status") {
+    const order = await readRecord(db, "kitchen", id);
+    if (!order) throw new Error("Pedido não encontrado.");
+    const allowed = { started: "started_at", ready: "ready_at", delivered: "delivered_at" };
+    if (!allowed[input.status]) throw new Error("Estado inválido.");
+    order.status = input.status;
+    order[allowed[input.status]] = now();
     await putRecord(db, "kitchen", id, order).run();
   } else if (action === "cash.open") {
     required(input.opened_by, "o responsável pela abertura");
