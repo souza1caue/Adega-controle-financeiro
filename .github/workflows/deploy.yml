@@ -1,3 +1,4 @@
+# Publica automaticamente após mudanças no Worker, interface ou migrações.
 name: Deploy Controle Adega
 
 on:
