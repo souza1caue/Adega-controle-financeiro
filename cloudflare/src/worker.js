@@ -245,7 +245,10 @@ async function mutate(request, env) {
     const rawToken = `${uid()}${uid()}`;
     const accessId = uid();
     const access = { shift_id: id, employee_name: shift.employee_name, token_hash: await sha256(rawToken), created_at: now(), expires_at: `${shift.work_date}T23:59:59-03:00` };
-    await putRecord(db, "staff_access", accessId, access).run();
+    const previous = await db.prepare("SELECT id,data FROM records WHERE kind='staff_access' AND json_extract(data,'$.shift_id')=? AND json_extract(data,'$.revoked_at') IS NULL").bind(id).all();
+    const statements = previous.results.map(row => { const oldAccess = JSON.parse(row.data); oldAccess.revoked_at = now(); return putRecord(db, "staff_access", row.id, oldAccess); });
+    statements.push(putRecord(db, "staff_access", accessId, access));
+    await db.batch(statements);
     return reply({ ok: true, id: accessId, access_token: rawToken, expires_at: access.expires_at });
   } else if (action === "staff.access.revoke") {
     const rows = await db.prepare("SELECT id,data FROM records WHERE kind='staff_access' AND json_extract(data,'$.shift_id')=? AND json_extract(data,'$.revoked_at') IS NULL").bind(id).all();
