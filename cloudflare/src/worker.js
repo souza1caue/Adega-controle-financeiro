@@ -158,6 +158,16 @@ function accountBalance(account) {
   return Math.max(0, Math.round((charges - Number(account.payments_total || 0)) * 100) / 100);
 }
 
+function assertAccountCanCharge(account, charge) {
+  if (account.blocked === true) throw new Error(`A caderneta de ${account.customer_name} está bloqueada para novos consumos.`);
+  const limit = Number(account.credit_limit || 0);
+  const resultingBalance = Math.round((accountBalance(account) + Number(charge || 0)) * 100) / 100;
+  if (limit > 0 && resultingBalance > limit + 0.001) {
+    const available = Math.max(0, limit - accountBalance(account));
+    throw new Error(`Limite da caderneta excedido. Disponível: R$ ${available.toFixed(2).replace(".", ",")}.`);
+  }
+}
+
 function isFood(item) {
   return item.category === "Comidas" || /por[cç][aã]o|batata|carne|frango|lanche|comida/i.test(item.name || "");
 }
@@ -355,19 +365,33 @@ async function mutate(request, env) {
     await db.prepare("DELETE FROM records WHERE kind='menu' AND id=?").bind(id).run();
   } else if (action === "account.create") {
     required(input.customer_name, "o nome do cliente");
-    await putRecord(db, "accounts", id, { customer_name: input.customer_name.trim(), note: (input.note || "").trim(), created_at: now().slice(0, 10), items: [], payments_total: 0 }).run();
+    await putRecord(db, "accounts", id, { customer_name: input.customer_name.trim(), phone: (input.phone || "").trim(), note: (input.note || "").trim(), credit_limit: amount(input.credit_limit || 0, "o limite da caderneta"), due_days: Math.max(1, quantity(input.due_days || 7)), blocked: input.blocked === true, created_at: now().slice(0, 10), items: [], payments_total: 0 }).run();
+  } else if (action === "account.update") {
+    const account = await readRecord(db, "accounts", id);
+    if (!account) throw new Error("Caderneta não encontrada.");
+    required(input.customer_name, "o nome do cliente");
+    account.customer_name = input.customer_name.trim();
+    account.phone = (input.phone || "").trim();
+    account.note = (input.note || "").trim();
+    account.credit_limit = amount(input.credit_limit || 0, "o limite da caderneta");
+    account.due_days = Math.max(1, quantity(input.due_days || 7));
+    account.blocked = input.blocked === true;
+    account.updated_at = now();
+    await putRecord(db, "accounts", id, account).run();
   } else if (action === "account.addItem") {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Conta não encontrada.");
     required(input.description, "o item");
     const createdAt = now();
     const orderId = uid();
-    const entry = { id: uid(), menu_id: input.menu_id || "", description: input.description.trim(), quantity: quantity(input.quantity), price: amount(input.price, "o preço"), created_at: createdAt, order_id: orderId, stock_usage: [] };
+    const origin = await orderOrigin(db, input.origin_token);
+    const entry = { id: uid(), menu_id: input.menu_id || "", description: input.description.trim(), quantity: quantity(input.quantity), price: amount(input.price, "o preço"), note: (input.note || "").trim(), created_at: createdAt, order_id: orderId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "", stock_usage: [] };
+    assertAccountCanCharge(account, Number(entry.quantity) * Number(entry.price));
     if (entry.menu_id) entry.stock_usage = await recipeUsage(db, entry.menu_id, entry.quantity);
     account.items = [...(account.items || []), entry];
     const statements = [
       putRecord(db, "accounts", id, account),
-      putRecord(db, "sales", uid(), { menu_id: entry.menu_id, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, customer_name: account.customer_name, payment_method: "Caderneta", account_id: id, account_item_id: entry.id, order_id: orderId, created_at: createdAt }),
+      putRecord(db, "sales", uid(), { menu_id: entry.menu_id, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, customer_name: account.customer_name, payment_method: "Caderneta", account_id: id, account_item_id: entry.id, order_id: orderId, created_at: createdAt, ...origin }),
     ];
     if (entry.stock_usage.length) {
       for (const usage of entry.stock_usage) {
@@ -435,6 +459,7 @@ async function mutate(request, env) {
     account.payments_total = Math.round((Number(account.payments_total || 0) + received) * 100) / 100;
     account.last_payment_at = createdAt;
     await db.batch([putRecord(db, "accounts", id, account), putRecord(db, "account_payments", paymentId, payment)]);
+    return reply({ ok: true, id: paymentId, payment, balance_before: balance, balance_after: Math.max(0, Math.round((balance - received) * 100) / 100) });
   } else if (action === "sale.checkout") {
     const items = await cartItems(db, input.items);
     const createdAt = now();
@@ -451,9 +476,10 @@ async function mutate(request, env) {
       let account = await readRecord(db, "accounts", accountId);
       if (!account) {
         required(customerName, "o cliente para criar a caderneta");
-        account = { customer_name: customerName, note: "", created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
+        account = { customer_name: customerName, phone: "", note: "", credit_limit: 0, due_days: 7, blocked: false, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
       }
-      const accountEntries = items.map((item) => ({ id: uid(), menu_id: item.menu_id, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId }));
+      assertAccountCanCharge(account, items.reduce((sum, item) => sum + Number(item.quantity) * Number(item.price), 0));
+      const accountEntries = items.map((item) => ({ id: uid(), menu_id: item.menu_id, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
       for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: account.customer_name, payment_method: "Caderneta", account_id: accountId, account_item_id: entry.id, order_id: orderId, created_at: createdAt, ...origin }));
@@ -496,6 +522,8 @@ async function mutate(request, env) {
     }
     await db.batch(statements);
   } else if (action === "sale.delete") {
+    const sale = await readRecord(db, "sales", id);
+    if (sale?.account_id) throw new Error("Consumos de caderneta não podem ser apagados. Use o cancelamento com responsável e justificativa.");
     await db.prepare("DELETE FROM records WHERE kind='sales' AND id=?").bind(id).run();
   } else if (action === "sale.void") {
     required(input.reason, "a justificativa do cancelamento");
