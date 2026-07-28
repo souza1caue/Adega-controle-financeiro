@@ -1,5 +1,5 @@
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
-const KINDS = ["menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_movements", "stock_items", "recipes", "inventories"];
+const KINDS = ["menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_movements", "stock_items", "recipes", "inventories", "employees", "staff_shifts"];
 
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 const now = () => new Date().toISOString();
@@ -174,7 +174,7 @@ async function cartItems(db, inputItems) {
 async function mutate(request, env) {
   const input = await request.json();
   const action = input.action;
-  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "recipe.save", "inventory.start", "inventory.finish"]);
+  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel"]);
   if (adminActions.has(action) && !(await isAdmin(request, env))) return reply({ error: "Acesso administrativo necessário." }, 401);
   const db = env.DB;
   const id = input.id || uid();
@@ -184,6 +184,48 @@ async function mutate(request, env) {
     const item = { ...(action === "menu.update" ? await readRecord(db, "menu", id) : {}), name: input.name.trim(), price: Number(input.price), category: input.category === "Comidas" ? "Comidas" : "Bebidas" };
     item[action === "menu.create" ? "created_at" : "updated_at"] = now();
     await putRecord(db, "menu", id, item).run();
+  } else if (action === "employee.save") {
+    required(input.name, "o nome do funcionário");
+    if (!["Adega", "Cozinha"].includes(input.group)) throw new Error("Grupo de funcionário inválido.");
+    const employee = { ...(await readRecord(db, "employees", id) || {}), name: input.name.trim(), group: input.group, daily_rate: amount(input.daily_rate, "a diária", false), active: input.active !== false && input.active !== "false", note: (input.note || "").trim(), updated_at: now() };
+    if (!employee.created_at) employee.created_at = now();
+    await putRecord(db, "employees", id, employee).run();
+  } else if (action === "employee.toggle") {
+    const employee = await readRecord(db, "employees", id);
+    if (!employee) throw new Error("Funcionário não encontrado.");
+    employee.active = !employee.active; employee.updated_at = now();
+    await putRecord(db, "employees", id, employee).run();
+  } else if (action === "staff.shift.save") {
+    const employee = await readRecord(db, "employees", input.employee_id);
+    if (!employee) throw new Error("Funcionário não encontrado.");
+    required(input.work_date, "a data de trabalho");
+    const duplicate = await db.prepare("SELECT id FROM records WHERE kind='staff_shifts' AND json_extract(data,'$.employee_id')=? AND json_extract(data,'$.work_date')=? AND json_extract(data,'$.status')!='cancelled' LIMIT 1").bind(input.employee_id, input.work_date).first();
+    if (duplicate && duplicate.id !== id) throw new Error("Este funcionário já está registrado nesta data.");
+    const shift = { ...(await readRecord(db, "staff_shifts", id) || {}), employee_id: input.employee_id, employee_name: employee.name, group: employee.group, work_date: input.work_date, daily_rate: amount(input.daily_rate, "a diária", false), status: "confirmed", note: (input.note || "").trim(), updated_at: now() };
+    if (!shift.created_at) shift.created_at = now();
+    await putRecord(db, "staff_shifts", id, shift).run();
+  } else if (action === "staff.shift.pay") {
+    const shift = await readRecord(db, "staff_shifts", id);
+    if (!shift || shift.status === "cancelled") throw new Error("Diária não encontrada.");
+    if (shift.status === "paid") throw new Error("Esta diária já foi paga.");
+    required(input.responsible, "o responsável");
+    if (!["Dinheiro", "Pix", "Outro"].includes(input.payment_method)) throw new Error("Forma de pagamento inválida.");
+    shift.status = "paid"; shift.payment_method = input.payment_method; shift.paid_at = now(); shift.paid_by = input.responsible.trim(); shift.payment_note = (input.note || "").trim();
+    const statements = [putRecord(db, "staff_shifts", id, shift)];
+    if (input.payment_method === "Dinheiro") {
+      const open = await db.prepare("SELECT id,data FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+      if (!open) throw new Error("Abra o caixa antes de pagar uma diária em dinheiro.");
+      const cash = JSON.parse(open.data);
+      cash.movements = [...(cash.movements || []), { id: uid(), type: "withdrawal", amount: Number(shift.daily_rate), responsible: shift.paid_by, note: `Diária — ${shift.employee_name}${shift.payment_note ? ` · ${shift.payment_note}` : ""}`, created_at: now(), staff_shift_id: id }];
+      statements.push(putRecord(db, "cash", open.id, cash));
+    }
+    await db.batch(statements);
+  } else if (action === "staff.shift.cancel") {
+    const shift = await readRecord(db, "staff_shifts", id);
+    if (!shift) throw new Error("Diária não encontrada.");
+    if (shift.status === "paid") throw new Error("Não é possível cancelar uma diária já paga.");
+    shift.status = "cancelled"; shift.cancelled_at = now();
+    await putRecord(db, "staff_shifts", id, shift).run();
   } else if (action === "stock.item.save") {
     required(input.name, "o nome do insumo");
     const item = { ...(await readRecord(db, "stock_items", id) || {}), name: input.name.trim(), unit: (input.unit || "un").trim(), stock_minimum: stockNumber(input.stock_minimum || 0, "o estoque mínimo"), cost_price: amount(input.cost_price || 0, "o custo"), sku: (input.sku || "").trim(), barcode: (input.barcode || "").trim(), supplier: (input.supplier || "").trim(), updated_at: now() };
