@@ -63,6 +63,7 @@ function draw(){
   if(module==="Frente de caixa"){
     page ||= "sales"; const ready=entries(data.kitchen).filter(([,o])=>(o.status||"pending")==="ready").length; setupNav([["sales","Saídas"],["accounts","Fiado"],["frontKitchen",`Pedidos${ready?` (${ready})`:""}`]]);
     app.innerHTML=page==="sales"?salesPage():page==="accounts"?accountsPage():frontKitchenPage();
+    refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
   }else if(module==="Cozinha"){
     page="kitchen";setupNav([]);app.innerHTML=kitchenPage();refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
   }else if(module==="Impressora"){
