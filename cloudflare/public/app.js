@@ -53,7 +53,7 @@ function empty(text){return `<div class="empty">${esc(text)}</div>`}
 function portal(){
   nav.innerHTML="";
   app.innerHTML=`<section class="portal"><div class="eyebrow">Operação integrada</div><h1>Escolha o módulo desta máquina</h1><p class="subtitle">Cada tela acompanha os mesmos dados em tempo real.</p><div class="module-grid">
-    ${[["Frente de caixa","Vendas, fiado e acompanhamento de pedidos."],["Cozinha","Fila de preparo com atualização automática."],["Impressora","Impressão automática das comandas."],["Admin","Cardápio, caixa e relatórios."]].map(([name,desc])=>`<button class="module-card" data-module="${name}"><span>ACESSAR</span><b>${name}</b><span>${desc}</span></button>`).join("")}
+    ${[["Frente de caixa","Vendas, fiado e acompanhamento de pedidos."],["Cozinha","Fila de preparo com atualização automática."],["Admin","Cardápio, caixa e relatórios."]].map(([name,desc])=>`<button class="module-card" data-module="${name}"><span>ACESSAR</span><b>${name}</b><span>${desc}</span></button>`).join("")}
   </div></section>`;
 }
 function setupNav(items){nav.innerHTML=items.map(([key,label])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${label}</button>`).join("")+`<button data-home class="ghost">Módulos</button>`}
@@ -77,7 +77,7 @@ function draw(){
   }
 }
 
-function adminShell(content){const groups=[["Operação",[["summary","Visão geral"],["cash","Controle de caixa"],["stock","Estoque"]]],["Cadastros",[["menu","Cardápio"],["accounts","Cadernetas"]]],["Acompanhamento",[["kitchen","Cozinha"],["adminPrinter","Central de impressão"]]]];return `<div class="admin-layout"><aside class="admin-sidebar"><div class="admin-identity"><span class="eyebrow">Administração</span><b>Controle da Adega</b></div>${groups.map(([label,items])=>`<div class="admin-nav-group"><small>${label}</small>${items.map(([key,text])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${text}</button>`).join("")}</div>`).join("")}<button class="ghost admin-logout" data-admin-logout>Sair do Admin</button></aside><section class="admin-content">${content}</section></div>`}
+function adminShell(content){const groups=[["Operação",[["summary","Visão geral"],["cash","Controle de caixa"],["stock","Estoque"]]],["Cadastros",[["menu","Cardápio"],["accounts","Cadernetas"]]],["Acompanhamento",[["kitchen","Cozinha"]]]];return `<div class="admin-layout"><aside class="admin-sidebar"><div class="admin-identity"><span class="eyebrow">Administração</span><b>Controle da Adega</b></div>${groups.map(([label,items])=>`<div class="admin-nav-group"><small>${label}</small>${items.map(([key,text])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${text}</button>`).join("")}</div>`).join("")}<button class="ghost admin-logout" data-admin-logout>Sair do Admin</button></aside><section class="admin-content">${content}</section></div>`}
 
 function salesPage(){
   const open=activeCash();
