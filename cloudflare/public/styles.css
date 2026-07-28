@@ -31,3 +31,4 @@
 @media(max-width:600px){.front-kitchen-summary{grid-template-columns:1fr 1fr}.front-order-head{align-items:start}.front-order-card{padding:14px}}
 .front-kitchen-select{display:none;margin-bottom:12px}.front-order-card{padding:14px}.front-order-head h3{font-size:17px}.front-order-details{margin-top:10px}.front-order-details summary{cursor:pointer;color:var(--gold);font-size:13px;font-weight:700}.front-order-details[open] summary{margin-bottom:10px}.front-order-items{margin:0}.front-kitchen-summary article{padding:13px}.front-kitchen-summary b{font-size:28px}
 @media(max-width:600px){.front-kitchen-tabs{display:none}.front-kitchen-select{display:block}.front-order-card{padding:12px}.front-order-head h3{font-size:16px}.front-order-head .eyebrow{font-size:10px}.front-order-head>div:last-child>b{font-size:12px}.front-deliver{padding:13px}.front-kitchen-history{margin-top:16px}}
+button,.button,.product-tile{touch-action:manipulation}
