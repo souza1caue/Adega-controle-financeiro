@@ -105,6 +105,19 @@ async function recipeUsage(db, menuId, multiplier = 1) {
   return usage;
 }
 
+async function orderOrigin(db, token) {
+  const fallback = { source_type: "station", source_name: "Caixa principal" };
+  if (!token) return fallback;
+  const tokenHash = await sha256(token);
+  const row = await db.prepare("SELECT data FROM records WHERE kind='staff_access' AND json_extract(data,'$.token_hash')=? LIMIT 1").bind(tokenHash).first();
+  if (!row) throw new Error("Este acesso de funcionário não é válido.");
+  const access = JSON.parse(row.data);
+  if (access.revoked_at || new Date(access.expires_at).getTime() < Date.now()) throw new Error("O acesso deste funcionário expirou. Leia um novo QR Code.");
+  const shift = await readRecord(db, "staff_shifts", access.shift_id);
+  if (!shift || shift.status === "cancelled") throw new Error("O acesso deste funcionário foi revogado.");
+  return { source_type: "staff", source_name: access.employee_name, source_shift_id: access.shift_id };
+}
+
 function stockMovement(db, menuId, product, type, quantityValue, details = {}) {
   const movementQuantity = stockNumber(quantityValue, "a quantidade da movimentação", false);
   const before = Number(product.stock_quantity || 0);
@@ -174,7 +187,7 @@ async function cartItems(db, inputItems) {
 async function mutate(request, env) {
   const input = await request.json();
   const action = input.action;
-  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel"]);
+  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke"]);
   if (adminActions.has(action) && !(await isAdmin(request, env))) return reply({ error: "Acesso administrativo necessário." }, 401);
   const db = env.DB;
   const id = input.id || uid();
@@ -226,6 +239,18 @@ async function mutate(request, env) {
     if (shift.status === "paid") throw new Error("Não é possível cancelar uma diária já paga.");
     shift.status = "cancelled"; shift.cancelled_at = now();
     await putRecord(db, "staff_shifts", id, shift).run();
+  } else if (action === "staff.access.create") {
+    const shift = await readRecord(db, "staff_shifts", id);
+    if (!shift || shift.status === "cancelled" || shift.group !== "Adega") throw new Error("O acesso é exclusivo para funcionários da Adega escalados no dia.");
+    const rawToken = `${uid()}${uid()}`;
+    const accessId = uid();
+    const access = { shift_id: id, employee_name: shift.employee_name, token_hash: await sha256(rawToken), created_at: now(), expires_at: `${shift.work_date}T23:59:59-03:00` };
+    await putRecord(db, "staff_access", accessId, access).run();
+    return reply({ ok: true, id: accessId, access_token: rawToken, expires_at: access.expires_at });
+  } else if (action === "staff.access.revoke") {
+    const rows = await db.prepare("SELECT id,data FROM records WHERE kind='staff_access' AND json_extract(data,'$.shift_id')=? AND json_extract(data,'$.revoked_at') IS NULL").bind(id).all();
+    const statements = rows.results.map(row => { const access = JSON.parse(row.data); access.revoked_at = now(); return putRecord(db, "staff_access", row.id, access); });
+    if (statements.length) await db.batch(statements);
   } else if (action === "stock.item.save") {
     required(input.name, "o nome do insumo");
     const item = { ...(await readRecord(db, "stock_items", id) || {}), name: input.name.trim(), unit: (input.unit || "un").trim(), stock_minimum: stockNumber(input.stock_minimum || 0, "o estoque mínimo"), cost_price: amount(input.cost_price || 0, "o custo"), sku: (input.sku || "").trim(), barcode: (input.barcode || "").trim(), supplier: (input.supplier || "").trim(), updated_at: now() };
@@ -410,6 +435,7 @@ async function mutate(request, env) {
   } else if (action === "sale.checkout") {
     const items = await cartItems(db, input.items);
     const createdAt = now();
+    const origin = await orderOrigin(db, input.origin_token);
     const customerName = (input.customer_name || "").trim();
     const note = (input.note || "").trim();
     const statements = [];
@@ -427,7 +453,7 @@ async function mutate(request, env) {
       const accountEntries = items.map((item) => ({ id: uid(), menu_id: item.menu_id, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId }));
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
-      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: account.customer_name, payment_method: "Caderneta", account_id: accountId, account_item_id: entry.id, order_id: orderId, created_at: createdAt }));
+      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: account.customer_name, payment_method: "Caderneta", account_id: accountId, account_item_id: entry.id, order_id: orderId, created_at: createdAt, ...origin }));
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: account.customer_name, note, origin: "Caderneta", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0 }));
     } else {
       const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
@@ -435,7 +461,7 @@ async function mutate(request, env) {
       required(input.payment_method, "a forma de pagamento");
       for (const item of items) {
         const saleId = uid();
-        statements.push(putRecord(db, "sales", saleId, { menu_id: item.menu_id, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, payment_method: input.payment_method, cash_session_id: open.id, order_id: orderId, created_at: createdAt }));
+        statements.push(putRecord(db, "sales", saleId, { menu_id: item.menu_id, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, payment_method: input.payment_method, cash_session_id: open.id, order_id: orderId, created_at: createdAt, ...origin }));
       }
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: customerName, note, origin: "Venda", payment_method: input.payment_method, created_at: createdAt, status: "pending", print_status: "pending", print_count: 0 }));
     }
