@@ -365,17 +365,17 @@ async function mutate(request, env) {
     await db.prepare("DELETE FROM records WHERE kind='menu' AND id=?").bind(id).run();
   } else if (action === "account.create") {
     required(input.customer_name, "o nome do cliente");
-    await putRecord(db, "accounts", id, { customer_name: input.customer_name.trim(), phone: (input.phone || "").trim(), note: (input.note || "").trim(), credit_limit: amount(input.credit_limit || 0, "o limite da caderneta"), due_days: Math.max(1, quantity(input.due_days || 7)), blocked: input.blocked === true, created_at: now().slice(0, 10), items: [], payments_total: 0 }).run();
+    await putRecord(db, "accounts", id, { customer_name: input.customer_name.trim(), note: (input.note || "").trim(), credit_limit: amount(input.credit_limit || 0, "o limite da caderneta"), blocked: input.blocked === true, created_at: now().slice(0, 10), items: [], payments_total: 0 }).run();
   } else if (action === "account.update") {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Caderneta não encontrada.");
     required(input.customer_name, "o nome do cliente");
     account.customer_name = input.customer_name.trim();
-    account.phone = (input.phone || "").trim();
     account.note = (input.note || "").trim();
     account.credit_limit = amount(input.credit_limit || 0, "o limite da caderneta");
-    account.due_days = Math.max(1, quantity(input.due_days || 7));
     account.blocked = input.blocked === true;
+    delete account.phone;
+    delete account.due_days;
     account.updated_at = now();
     await putRecord(db, "accounts", id, account).run();
   } else if (action === "account.addItem") {
@@ -456,10 +456,14 @@ async function mutate(request, env) {
     const paymentId = uid();
     const createdAt = now();
     const payment = { account_id: id, customer_name: account.customer_name, amount: received, payment_method: input.payment_method, responsible: input.responsible.trim(), note: (input.note || "").trim(), cash_session_id: open.id, created_at: createdAt };
+    const remainingBalance = Math.max(0, Math.round((balance - received) * 100) / 100);
     account.payments_total = Math.round((Number(account.payments_total || 0) + received) * 100) / 100;
     account.last_payment_at = createdAt;
-    await db.batch([putRecord(db, "accounts", id, account), putRecord(db, "account_payments", paymentId, payment)]);
-    return reply({ ok: true, id: paymentId, payment, balance_before: balance, balance_after: Math.max(0, Math.round((balance - received) * 100) / 100) });
+    const accountStatement = remainingBalance <= 0.001
+      ? db.prepare("DELETE FROM records WHERE kind='accounts' AND id=?").bind(id)
+      : putRecord(db, "accounts", id, account);
+    await db.batch([accountStatement, putRecord(db, "account_payments", paymentId, payment)]);
+    return reply({ ok: true, id: paymentId, balance_after: remainingBalance, closed: remainingBalance <= 0.001 });
   } else if (action === "sale.checkout") {
     const items = await cartItems(db, input.items);
     const createdAt = now();
@@ -476,7 +480,7 @@ async function mutate(request, env) {
       let account = await readRecord(db, "accounts", accountId);
       if (!account) {
         required(customerName, "o cliente para criar a caderneta");
-        account = { customer_name: customerName, phone: "", note: "", credit_limit: 0, due_days: 7, blocked: false, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
+        account = { customer_name: customerName, note: "", credit_limit: 0, blocked: false, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
       }
       assertAccountCanCharge(account, items.reduce((sum, item) => sum + Number(item.quantity) * Number(item.price), 0));
       const accountEntries = items.map((item) => ({ id: uid(), menu_id: item.menu_id, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
