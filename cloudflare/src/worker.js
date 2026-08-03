@@ -382,7 +382,8 @@ async function mutate(request, env) {
   } else if (action === "stock.item.save") {
     required(input.name, "o nome do insumo");
     const packageSize = input.package_size === "" || input.package_size == null ? null : stockNumber(input.package_size, "o conteúdo da embalagem", false);
-    const item = { ...(await readRecord(db, "stock_items", id) || {}), name: input.name.trim(), unit: (input.unit || "un").trim(), package_size: packageSize, package_measure: packageSize == null ? "" : (input.package_measure || "ml").trim(), stock_minimum: stockNumber(input.stock_minimum || 0, "o estoque mínimo"), cost_price: amount(input.cost_price || 0, "o custo"), sku: (input.sku || "").trim(), barcode: (input.barcode || "").trim(), supplier: (input.supplier || "").trim(), updated_at: now() };
+    const portionSize = input.portion_size === "" || input.portion_size == null ? null : stockNumber(input.portion_size, "o porcionamento", false);
+    const item = { ...(await readRecord(db, "stock_items", id) || {}), name: input.name.trim(), unit: (input.unit || "un").trim(), package_size: packageSize, package_measure: packageSize == null ? "" : (input.package_measure || "ml").trim(), portion_size: portionSize, portion_measure: portionSize == null ? "" : (input.portion_measure || input.package_measure || "ml").trim(), stock_minimum: stockNumber(input.stock_minimum || 0, "o estoque mínimo"), cost_price: amount(input.cost_price || 0, "o custo"), sku: (input.sku || "").trim(), barcode: (input.barcode || "").trim(), supplier: (input.supplier || "").trim(), updated_at: now() };
     if (item.stock_quantity == null) item.stock_quantity = 0;
     if (!item.created_at) item.created_at = now();
     await db.batch([
