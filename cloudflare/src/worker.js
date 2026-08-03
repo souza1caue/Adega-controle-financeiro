@@ -414,7 +414,7 @@ async function mutate(request, env) {
   } else if (action === "stock.invoice.import") {
     required(input.invoice_key, "a chave da nota fiscal");
     required(input.responsible, "o responsável pela importação");
-    if (await readRecord(db, "invoice_imports", input.invoice_key)) throw new Error("Esta nota fiscal já foi importada.");
+    if (await readRecord(db, "invoice_imports", input.invoice_key)) throw new Error("Este documento já foi importado.");
     const invoiceItems = Array.isArray(input.items) ? input.items : [];
     if (!invoiceItems.length || invoiceItems.length > 80) throw new Error("A nota deve conter entre 1 e 80 produtos.");
     const existingRows = await db.prepare("SELECT id,data FROM records WHERE kind='stock_items'").all();
@@ -439,7 +439,8 @@ async function mutate(request, env) {
       if (!item.created_at) item.created_at = now();
       statements.push(putRecord(db, "stock_items", stockItemId, item));
       if (!match) statements.push(db.prepare("INSERT OR IGNORE INTO stock_balances(id,quantity) VALUES(?,0)").bind(stockItemId));
-      statements.push(...atomicStockChange(db, stockItemId, item, "in", qty, { unit_cost: entryCost, reason: `Entrada pela NF-e ${input.invoice_number || input.invoice_key}`, responsible: input.responsible, reference_id: input.invoice_key }));
+      const documentLabel = input.source_type === "pdf" ? "pedido" : "NF-e";
+      statements.push(...atomicStockChange(db, stockItemId, item, "in", qty, { unit_cost: entryCost, reason: `Entrada pelo ${documentLabel} ${input.invoice_number || input.invoice_key}`, responsible: input.responsible, reference_id: input.invoice_key }));
       const indexed = { id: stockItemId, item };
       if (barcode) byBarcode.set(barcode, indexed);
       if (sku) bySku.set(sku, indexed);
@@ -825,6 +826,57 @@ async function mutate(request, env) {
   return reply({ ok: true, id });
 }
 
+function parseBrazilianNumber(value) {
+  const normalized = String(value || "").trim().replace(/\s/g, "").replace(/\.(?=\d{3}(?:\D|$))/g, "").replace(",", ".");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function parseStockOrderText(rawText) {
+  const lines = String(rawText || "").replace(/\|/g, "\n").split(/\r?\n/).map((line) => line.replace(/[*_`#]/g, "").trim()).filter((line) => line && !/^[-: ]+$/.test(line));
+  const fullText = lines.join("\n"), productHeader = lines.findIndex((line) => /^c[oó]d(?:igo)?\.?$/i.test(line));
+  if (productHeader < 0) throw new Error("Não foi possível localizar a tabela de produtos no PDF.");
+  const supplierIndex = lines.findIndex((line) => /CNPJ\s*:/i.test(line));
+  const supplier = supplierIndex > 0 ? lines[supplierIndex - 1] : "Fornecedor não identificado";
+  const cnpj = (fullText.match(/CNPJ\s*:\s*([\d./-]+)/i)?.[1] || "").replace(/\D/g, "");
+  const invoiceNumber = fullText.match(/N[º°o.]?\s*ped\s*:\s*(\d{6,})/i)?.[1] || fullText.match(/Pedido\s*:?\s*(\d{6,})/i)?.[1] || "";
+  if (!invoiceNumber) throw new Error("Não foi possível identificar o número do pedido no PDF.");
+  const codeIndexes = [];
+  for (let index = productHeader + 1; index < lines.length; index += 1) {
+    if (/valor\s+total/i.test(lines[index])) break;
+    if (/^\d{4,10}$/.test(lines[index])) codeIndexes.push(index);
+  }
+  const unitMap = { UN: "un", UND: "un", UNID: "un", PT: "pacote", PCT: "pacote", CX: "caixa", KG: "kg", G: "g", GL: "galão", LT: "L", L: "L", ML: "ml", GF: "garrafa", GFA: "garrafa", LATA: "lata", FD: "fardo" };
+  const items = [];
+  for (let position = 0; position < codeIndexes.length; position += 1) {
+    const start = codeIndexes[position], end = codeIndexes[position + 1] || lines.findIndex((line, index) => index > start && /valor\s+total/i.test(line));
+    const chunk = lines.slice(start, end > start ? end : lines.length), quantityValue = parseBrazilianNumber(chunk[1]), rawUnit = String(chunk[2] || "UN").toUpperCase();
+    if (!Number.isFinite(quantityValue) || quantityValue <= 0) continue;
+    const numericIndexes = chunk.map((line, index) => /^\d+(?:[.,]\d+)?$/.test(line) ? index : -1).filter((index) => index > 2);
+    if (numericIndexes.length < 2) continue;
+    const unitCost = parseBrazilianNumber(chunk[numericIndexes[numericIndexes.length - 2]]), priceBlockStart = numericIndexes[Math.max(0, numericIndexes.length - 3)];
+    let descriptionStart = 3;
+    while (descriptionStart < priceBlockStart && /^\d+(?:[.,]\d+)?$/.test(chunk[descriptionStart])) descriptionStart += 1;
+    const name = chunk.slice(descriptionStart, priceBlockStart).join(" ").replace(/\s+/g, " ").trim();
+    if (!name || !Number.isFinite(unitCost)) continue;
+    items.push({ name, sku: chunk[0], barcode: "", unit: unitMap[rawUnit] || "un", quantity: quantityValue, unit_cost: unitCost });
+  }
+  if (!items.length) throw new Error("Nenhum produto válido foi reconhecido no PDF.");
+  return { invoice_key: `pdf:${cnpj || supplier.toLocaleLowerCase().replace(/\W/g, "")}:${invoiceNumber}`, invoice_number: invoiceNumber, supplier, items, source_type: "pdf" };
+}
+
+async function extractPdfInvoice(request, env) {
+  if (!(await isAdmin(request, env))) return reply({ error: "Acesso administrativo necessário." }, 401);
+  if (!env.AI) return reply({ error: "O leitor de PDF não está configurado no Cloudflare." }, 503);
+  const form = await request.formData(), file = form.get("file");
+  if (!(file instanceof File) || file.type !== "application/pdf") return reply({ error: "Envie um arquivo PDF válido." }, 400);
+  if (file.size > 10 * 1024 * 1024) return reply({ error: "O PDF deve ter no máximo 10 MB." }, 400);
+  const converted = await env.AI.toMarkdown({ name: file.name || "pedido.pdf", blob: file }, { conversionOptions: { output: { format: "text" }, pdf: { metadata: false } } });
+  const document = Array.isArray(converted) ? converted[0] : converted;
+  if (!document || document.format === "error" || !document.data) throw new Error(document?.error || "Não foi possível extrair o texto do PDF.");
+  return reply(parseStockOrderText(document.data));
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -849,6 +901,7 @@ export default {
       if (url.pathname === "/api/login" && request.method === "POST") return await login(request, env);
       if (url.pathname === "/api/device/claim" && request.method === "POST") return await claimDevice(request, env);
       if (url.pathname === "/api/staff/claim" && request.method === "POST") return await claimStaffAccess(request, env);
+      if (url.pathname === "/api/invoice/pdf" && request.method === "POST") return await extractPdfInvoice(request, env);
       if (url.pathname === "/api/mutate" && request.method === "POST") return await mutate(request, env);
       if (url.pathname.startsWith("/api/")) return reply({ error: "Rota não encontrada." }, 404);
       return env.ASSETS.fetch(request);
