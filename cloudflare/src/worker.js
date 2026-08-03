@@ -834,7 +834,7 @@ function parseBrazilianNumber(value) {
 
 function parseStockOrderText(rawText) {
   const lines = String(rawText || "").replace(/\|/g, "\n").split(/\r?\n/).map((line) => line.replace(/[*_`#]/g, "").trim()).filter((line) => line && !/^[-: ]+$/.test(line));
-  const fullText = lines.join("\n"), productHeader = lines.findIndex((line) => /^c[oó]d(?:igo)?\.?$/i.test(line));
+  const fullText = lines.join("\n"), productHeader = lines.findIndex((line) => /(?:^|\s)c[oó]d(?:igo)?\.?(?:\s|$)/i.test(line));
   if (productHeader < 0) throw new Error("Não foi possível localizar a tabela de produtos no PDF.");
   const supplierIndex = lines.findIndex((line) => /CNPJ\s*:/i.test(line));
   const supplier = supplierIndex > 0 ? lines[supplierIndex - 1] : "Fornecedor não identificado";
