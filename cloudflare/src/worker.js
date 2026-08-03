@@ -834,7 +834,7 @@ function parseBrazilianNumber(value) {
 
 function stockProductName(value) {
   const packagingOnly = /^(?:caixa|cx)\s*(?:com|c\/?)?\s*\d+\s*(?:gal(?:ões|oes|ão|ao)|gl)\b|^\d+\s*(?:gal(?:ões|oes|ão|ao)|gl)\s*(?:por|\/|x)\s*(?:caixa|cx)\b|^(?:peso(?:\s+de\s+cada|\s+unitário)?|cada)\s*:?[\s\d.,]*(?:kg|g)\b/i;
-  return String(value || "").split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !packagingOnly.test(line)).join(" ").replace(/\s+(?:[-–|]\s*)?(?:caixa|cx)\s*(?:com|c\/?)\s*\d+\s*(?:gal(?:ões|oes|ão|ao)|gl)\b.*$/i, "").replace(/\s+(?:[-–|]\s*)?\d+\s*(?:gal(?:ões|oes|ão|ao)|gl)\s*(?:por|\/|x)\s*(?:caixa|cx)\b.*$/i, "").replace(/\s+/g, " ").trim();
+  return String(value || "").split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !packagingOnly.test(line)).join(" ").replace(/\s*(?:[/|–-]\s*)?(?:caixa|cx)\s*(?:com|c\/?)\b.*$/i, "").replace(/\s+(?:[-–|]\s*)?\d+\s*(?:gal(?:ões|oes|ão|ao)|gl)\s*(?:por|\/|x)\s*(?:caixa|cx)\b.*$/i, "").replace(/\s*[/|–-]\s*$/, "").replace(/\s+/g, " ").trim();
 }
 
 function parseStockOrderText(rawText) {
