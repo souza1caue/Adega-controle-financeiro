@@ -259,7 +259,7 @@ async function cartItems(db, inputItems) {
 async function mutate(request, env) {
   const input = await request.json();
   const action = input.action;
-  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
+  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "event.save", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
   const admin = await isAdmin(request, env);
   const db = env.DB;
   const staffToken = request.headers.get("x-staff-access") || "";
@@ -304,6 +304,14 @@ async function mutate(request, env) {
     if (!employee) throw new Error("Funcionário não encontrado.");
     employee.active = !employee.active; employee.updated_at = now();
     await putRecord(db, "employees", id, employee).run();
+  } else if (action === "event.save") {
+    required(input.name, "o nome do evento ou atração");
+    required(input.event_type, "o tipo do evento");
+    const open = await db.prepare("SELECT id,data FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!open) throw new Error("Abra o caixa antes de cadastrar um evento.");
+    const cash = JSON.parse(open.data);
+    const event = { employee_id: "", employee_name: input.name.trim(), group: "Evento", event_type: input.event_type.trim(), cash_session_id: open.id, work_date: operationalDate(cash.opened_at), daily_rate: amount(input.daily_rate, "o cachê", false), status: "confirmed", note: (input.note || "").trim(), created_at: now(), updated_at: now() };
+    await putRecord(db, "staff_shifts", id, event).run();
   } else if (action === "staff.shift.save") {
     const employee = await readRecord(db, "employees", input.employee_id);
     if (!employee) throw new Error("Funcionário não encontrado.");
@@ -317,8 +325,8 @@ async function mutate(request, env) {
     await putRecord(db, "staff_shifts", id, shift).run();
   } else if (action === "staff.shift.pay") {
     const shift = await readRecord(db, "staff_shifts", id);
-    if (!shift || shift.status === "cancelled") throw new Error("Diária não encontrada.");
-    if (shift.status === "paid") throw new Error("Esta diária já foi paga.");
+    if (!shift || shift.status === "cancelled") throw new Error("Pagamento não encontrado.");
+    if (shift.status === "paid") throw new Error("Este pagamento já foi realizado.");
     required(input.responsible, "o responsável");
     if (!["Dinheiro", "Pix", "Outro"].includes(input.payment_method)) throw new Error("Forma de pagamento inválida.");
     shift.status = "paid"; shift.payment_method = input.payment_method; shift.paid_at = now(); shift.paid_by = input.responsible.trim(); shift.payment_note = (input.note || "").trim();
@@ -327,7 +335,8 @@ async function mutate(request, env) {
       const open = await db.prepare("SELECT id,data FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
       if (!open) throw new Error("Abra o caixa antes de pagar uma diária em dinheiro.");
       const cash = JSON.parse(open.data);
-      cash.movements = [...(cash.movements || []), { id: uid(), type: "withdrawal", amount: Number(shift.daily_rate), responsible: shift.paid_by, note: `Diária — ${shift.employee_name}${shift.payment_note ? ` · ${shift.payment_note}` : ""}`, created_at: now(), staff_shift_id: id }];
+      const paymentLabel = shift.group === "Evento" ? "Cachê" : "Diária";
+      cash.movements = [...(cash.movements || []), { id: uid(), type: "withdrawal", amount: Number(shift.daily_rate), responsible: shift.paid_by, note: `${paymentLabel} — ${shift.employee_name}${shift.payment_note ? ` · ${shift.payment_note}` : ""}`, created_at: now(), staff_shift_id: id }];
       statements.push(putRecord(db, "cash", open.id, cash));
     }
     await db.batch(statements);
