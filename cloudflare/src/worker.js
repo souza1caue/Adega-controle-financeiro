@@ -259,7 +259,7 @@ async function cartItems(db, inputItems) {
 async function mutate(request, env) {
   const input = await request.json();
   const action = input.action;
-  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "event.save", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
+  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "stock.invoice.import", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "event.save", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
   const admin = await isAdmin(request, env);
   const db = env.DB;
   const staffToken = request.headers.get("x-staff-access") || "";
@@ -411,6 +411,45 @@ async function mutate(request, env) {
     }
     const atomic = atomicStockChange(db, id, item, movementType, movementQty, input);
     await db.batch([putRecord(db, "stock_items", id, item), ...atomic]);
+  } else if (action === "stock.invoice.import") {
+    required(input.invoice_key, "a chave da nota fiscal");
+    required(input.responsible, "o responsável pela importação");
+    if (await readRecord(db, "invoice_imports", input.invoice_key)) throw new Error("Esta nota fiscal já foi importada.");
+    const invoiceItems = Array.isArray(input.items) ? input.items : [];
+    if (!invoiceItems.length || invoiceItems.length > 80) throw new Error("A nota deve conter entre 1 e 80 produtos.");
+    const existingRows = await db.prepare("SELECT id,data FROM records WHERE kind='stock_items'").all();
+    const balanceRows = await db.prepare("SELECT id,quantity FROM stock_balances").all();
+    const balances = new Map(balanceRows.results.map((row) => [row.id, Number(row.quantity || 0)]));
+    const existing = existingRows.results.map((row) => ({ id: row.id, item: JSON.parse(row.data) }));
+    const byBarcode = new Map(existing.filter(({ item }) => item.barcode).map((entry) => [String(entry.item.barcode), entry]));
+    const bySku = new Map(existing.filter(({ item }) => item.sku).map((entry) => [String(entry.item.sku), entry]));
+    const byName = new Map(existing.map((entry) => [String(entry.item.name || "").trim().toLocaleLowerCase(), entry]));
+    const statements = [];
+    let created = 0, updated = 0;
+    for (const source of invoiceItems) {
+      required(source.name, "o nome de todos os produtos da nota");
+      const qty = stockNumber(source.quantity, `a quantidade de ${source.name}`, false);
+      const entryCost = amount(source.unit_cost || 0, `o custo de ${source.name}`);
+      const barcode = String(source.barcode || "").trim(), sku = String(source.sku || "").trim(), nameKey = String(source.name).trim().toLocaleLowerCase();
+      const match = (barcode && byBarcode.get(barcode)) || (sku && bySku.get(sku)) || byName.get(nameKey);
+      const stockItemId = match?.id || uid(), current = balances.get(stockItemId) || 0;
+      const item = { ...(match?.item || {}), name: match?.item.name || String(source.name).trim(), unit: String(source.unit || match?.item.unit || "un").trim(), stock_minimum: Number(match?.item.stock_minimum || 0), sku: sku || match?.item.sku || "", barcode: barcode || match?.item.barcode || "", supplier: String(input.supplier || match?.item.supplier || "").trim(), updated_at: now() };
+      item.cost_price = Math.round(((current * Number(match?.item.cost_price || 0) + qty * entryCost) / (current + qty)) * 100) / 100;
+      item.last_cost_price = entryCost;
+      if (!item.created_at) item.created_at = now();
+      statements.push(putRecord(db, "stock_items", stockItemId, item));
+      if (!match) statements.push(db.prepare("INSERT OR IGNORE INTO stock_balances(id,quantity) VALUES(?,0)").bind(stockItemId));
+      statements.push(...atomicStockChange(db, stockItemId, item, "in", qty, { unit_cost: entryCost, reason: `Entrada pela NF-e ${input.invoice_number || input.invoice_key}`, responsible: input.responsible, reference_id: input.invoice_key }));
+      const indexed = { id: stockItemId, item };
+      if (barcode) byBarcode.set(barcode, indexed);
+      if (sku) bySku.set(sku, indexed);
+      byName.set(nameKey, indexed);
+      balances.set(stockItemId, current + qty);
+      if (match) updated += 1; else created += 1;
+    }
+    statements.push(putRecord(db, "invoice_imports", input.invoice_key, { invoice_key: input.invoice_key, invoice_number: String(input.invoice_number || "").trim(), supplier: String(input.supplier || "").trim(), products_count: invoiceItems.length, created, updated, imported_by: input.responsible.trim(), created_at: now() }));
+    await db.batch(statements);
+    return reply({ ok: true, id: input.invoice_key, created, updated, products_count: invoiceItems.length });
   } else if (action === "recipe.save") {
     const menuItem = await readRecord(db, "menu", id);
     if (!menuItem) throw new Error("Produto do cardápio não encontrado.");
