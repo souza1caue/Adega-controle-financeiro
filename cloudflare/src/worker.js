@@ -832,6 +832,11 @@ function parseBrazilianNumber(value) {
   return Number.isFinite(parsed) ? parsed : NaN;
 }
 
+function stockProductName(value) {
+  const packagingOnly = /^(?:caixa|cx)\s*(?:com|c\/?)?\s*\d+\s*(?:gal(?:ões|oes|ão|ao)|gl)\b|^\d+\s*(?:gal(?:ões|oes|ão|ao)|gl)\s*(?:por|\/|x)\s*(?:caixa|cx)\b|^(?:peso(?:\s+de\s+cada|\s+unitário)?|cada)\s*:?[\s\d.,]*(?:kg|g)\b/i;
+  return String(value || "").split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !packagingOnly.test(line)).join(" ").replace(/\s+(?:[-–|]\s*)?(?:caixa|cx)\s*(?:com|c\/?)\s*\d+\s*(?:gal(?:ões|oes|ão|ao)|gl)\b.*$/i, "").replace(/\s+(?:[-–|]\s*)?\d+\s*(?:gal(?:ões|oes|ão|ao)|gl)\s*(?:por|\/|x)\s*(?:caixa|cx)\b.*$/i, "").replace(/\s+/g, " ").trim();
+}
+
 function parseStockOrderText(rawText) {
   const lines = String(rawText || "").replace(/\|/g, "\n").split(/\r?\n/).map((line) => line.replace(/[*_`#]/g, "").trim()).filter((line) => line && !/^[-: ]+$/.test(line));
   const fullText = lines.join("\n"), detectedHeader = lines.findIndex((line) => /(?:^|\s)c[oó]d(?:igo)?\.?(?:\s|$)/i.test(line)), productHeader = Math.max(-1, detectedHeader);
@@ -842,7 +847,7 @@ function parseStockOrderText(rawText) {
   if (!invoiceNumber) throw new Error("Não foi possível identificar o número do pedido no PDF.");
   const unitMap = { UN: "un", UND: "un", UNID: "un", PT: "pacote", PCT: "pacote", CX: "caixa", KG: "kg", G: "g", GL: "galão", LT: "L", L: "L", ML: "ml", GF: "garrafa", GFA: "garrafa", LATA: "lata", FD: "fardo" };
   const productText = lines.slice(productHeader + 1).join("\n"), rowPattern = /\b(\d{4,10})\s+(\d+(?:[.,]\d+)?)\s+([A-Z]{1,6})\s+([\s\S]*?)(\d+[.,]\d{2})\s+(\d+[.,]\d{2})\s+(\d+[.,]\d{2})(?=\s*\d{4,10}\s|\s*valor\s+total)/gi;
-  const items = [...productText.matchAll(rowPattern)].map((match) => ({ name: match[4].replace(/\s+/g, " ").trim(), sku: match[1], barcode: "", unit: unitMap[match[3].toUpperCase()] || "un", quantity: parseBrazilianNumber(match[2]), unit_cost: parseBrazilianNumber(match[6]) })).filter((item) => item.name && item.quantity > 0 && Number.isFinite(item.unit_cost));
+  const items = [...productText.matchAll(rowPattern)].map((match) => ({ name: stockProductName(match[4]), sku: match[1], barcode: "", unit: unitMap[match[3].toUpperCase()] || "un", quantity: parseBrazilianNumber(match[2]), unit_cost: parseBrazilianNumber(match[6]) })).filter((item) => item.name && item.quantity > 0 && Number.isFinite(item.unit_cost));
   if (!items.length) throw new Error("Nenhum produto válido foi reconhecido no PDF.");
   return { invoice_key: `pdf:${cnpj || supplier.toLocaleLowerCase().replace(/\W/g, "")}:${invoiceNumber}`, invoice_number: invoiceNumber, supplier, items, source_type: "pdf" };
 }
