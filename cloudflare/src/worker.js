@@ -177,7 +177,7 @@ async function orderOrigin(db, token) {
   if (!access.cash_session_id) throw new Error("Este acesso pertence a um caixa anterior. Leia um novo QR Code.");
   const cash = await readRecord(db, "cash", access.cash_session_id);
   if (!cash || cash.status !== "open") throw new Error("O caixa deste acesso foi fechado. Leia um novo QR Code no próximo caixa.");
-  return { source_type: "staff", source_name: access.employee_name, source_shift_id: access.shift_id };
+  return { source_type: "staff", source_name: access.employee_name, source_shift_id: access.shift_id, cash_session_id: access.cash_session_id };
 }
 
 function stockMovement(db, menuId, product, type, quantityValue, details = {}) {
@@ -601,6 +601,9 @@ async function mutate(request, env) {
     const items = await cartItems(db, input.items);
     const createdAt = now();
     const origin = await orderOrigin(db, input.origin_token);
+    const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!open) throw new Error("Abra o caixa no Admin antes de registrar pedidos.");
+    const cashSessionId = origin.cash_session_id || open.id;
     const customerName = (input.customer_name || "").trim();
     const note = (input.note || "").trim();
     const statements = [];
@@ -615,20 +618,20 @@ async function mutate(request, env) {
         required(customerName, "o cliente para criar o fiado");
         account = { account_type: "customer", customer_name: customerName, note: "", credit_limit: 0, blocked: false, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
       }
+      const orderCustomerName = String(account.customer_name || customerName).trim();
+      required(orderCustomerName, "o nome do cliente da comanda");
       assertAccountCanCharge(account, items.reduce((sum, item) => sum + Number(item.quantity) * Number(item.price), 0));
-      const accountEntries = items.map((item) => ({ id: uid(), menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
+      const accountEntries = items.map((item) => ({ id: uid(), menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId, cash_session_id: cashSessionId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
-      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, item_category: entry.item_category, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: account.customer_name, payment_method: "Caderneta", account_id: accountId, account_item_id: entry.id, order_id: orderId, created_at: createdAt, ...origin }));
-      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: account.customer_name, note, origin: "Fiado", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
+      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, item_category: entry.item_category, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: orderCustomerName, payment_method: "Caderneta", account_id: accountId, account_type: account.account_type || "customer", account_item_id: entry.id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
+      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: orderCustomerName, account_id: accountId, account_type: account.account_type || "customer", cash_session_id: cashSessionId, note, origin: "Fiado", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
     } else {
-      const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
-      if (!open) throw new Error("Abra o caixa no Admin antes de usar a opção Pagar agora.");
       required(input.payment_method, "a forma de pagamento");
       if (shouldPrint) required(customerName, "o nome do cliente para enviar o pedido à cozinha");
       for (const item of items) {
         const saleId = uid();
-        statements.push(putRecord(db, "sales", saleId, { menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, payment_method: input.payment_method, cash_session_id: open.id, order_id: orderId, created_at: createdAt, ...origin }));
+        statements.push(putRecord(db, "sales", saleId, { menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, payment_method: input.payment_method, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
       }
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: customerName, note, origin: "Venda", payment_method: input.payment_method, created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
     }
