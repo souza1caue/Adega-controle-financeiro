@@ -841,14 +841,8 @@ function parseStockOrderText(rawText) {
   const invoiceNumber = fullText.match(/N[º°o.]?\s*ped\s*:\s*(\d{6,})/i)?.[1] || fullText.match(/Pedido\s*:?\s*(\d{6,})/i)?.[1] || "";
   if (!invoiceNumber) throw new Error("Não foi possível identificar o número do pedido no PDF.");
   const unitMap = { UN: "un", UND: "un", UNID: "un", PT: "pacote", PCT: "pacote", CX: "caixa", KG: "kg", G: "g", GL: "galão", LT: "L", L: "L", ML: "ml", GF: "garrafa", GFA: "garrafa", LATA: "lata", FD: "fardo" };
-  const productText = lines.slice(productHeader + 1).join("\n"), rowPattern = /\b(\d{4,10})\s+(\d+(?:[.,]\d+)?)\s+([A-Z]{1,6})\s+/g, rowMatches = [...productText.matchAll(rowPattern)];
-  const items = rowMatches.map((match, position) => {
-    const end = rowMatches[position + 1]?.index ?? productText.search(/valor\s+total/i), block = productText.slice(match.index + match[0].length, end > match.index ? end : productText.length);
-    const prices = [...block.matchAll(/\d+[.,]\d{2}/g)];
-    if (prices.length < 2) return null;
-    const priceStart = prices[Math.max(0, prices.length - 3)].index, name = block.slice(0, priceStart).replace(/\s+/g, " ").trim(), unitCost = parseBrazilianNumber(prices[prices.length - 2][0]), quantityValue = parseBrazilianNumber(match[2]);
-    return name && Number.isFinite(unitCost) && quantityValue > 0 ? { name, sku: match[1], barcode: "", unit: unitMap[match[3]] || "un", quantity: quantityValue, unit_cost: unitCost } : null;
-  }).filter(Boolean);
+  const productText = lines.slice(productHeader + 1).join("\n"), rowPattern = /\b(\d{4,10})\s+(\d+(?:[.,]\d+)?)\s+([A-Z]{1,6})\s+([\s\S]*?)(\d+[.,]\d{2})\s+(\d+[.,]\d{2})\s+(\d+[.,]\d{2})(?=\s*\d{4,10}\s|\s*valor\s+total)/gi;
+  const items = [...productText.matchAll(rowPattern)].map((match) => ({ name: match[4].replace(/\s+/g, " ").trim(), sku: match[1], barcode: "", unit: unitMap[match[3].toUpperCase()] || "un", quantity: parseBrazilianNumber(match[2]), unit_cost: parseBrazilianNumber(match[6]) })).filter((item) => item.name && item.quantity > 0 && Number.isFinite(item.unit_cost));
   if (!items.length) throw new Error("Nenhum produto válido foi reconhecido no PDF.");
   return { invoice_key: `pdf:${cnpj || supplier.toLocaleLowerCase().replace(/\W/g, "")}:${invoiceNumber}`, invoice_number: invoiceNumber, supplier, items, source_type: "pdf" };
 }
