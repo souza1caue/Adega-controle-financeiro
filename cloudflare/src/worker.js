@@ -142,12 +142,15 @@ function stockNumber(value, label = "a quantidade", allowZero = true) {
 // Converte somente unidades compatíveis; os demais insumos devem ser cadastrados
 // na unidade física que será baixada (ex.: garrafa, lata ou unidade).
 const UNIT_FACTORS = { ml: { ml: 1, L: .001 }, L: { ml: 1000, L: 1 }, g: { g: 1, kg: .001 }, kg: { g: 1000, kg: 1 } };
-function recipeQuantity(value, fromUnit, stockUnit) {
+function recipeQuantity(value, fromUnit, stockUnit, stockItem = {}) {
   const qty = stockNumber(value, "o consumo por venda", false);
   if (!fromUnit || fromUnit === stockUnit) return qty;
   const factor = UNIT_FACTORS[fromUnit]?.[stockUnit];
-  if (!factor) throw new Error(`Não é possível converter ${fromUnit} para ${stockUnit}.`);
-  return Math.round(qty * factor * 10000) / 10000;
+  if (factor) return Math.round(qty * factor * 10000) / 10000;
+  const packageSize = Number(stockItem.package_size || 0), packageMeasure = stockItem.package_measure;
+  const packageFactor = UNIT_FACTORS[fromUnit]?.[packageMeasure];
+  if (packageSize > 0 && packageFactor) return Math.round(qty * packageFactor / packageSize * 10000) / 10000;
+  throw new Error(`Não é possível converter ${fromUnit} para ${stockUnit}. Confira a unidade e o conteúdo da embalagem no estoque.`);
 }
 
 async function recipeUsage(db, menuId, multiplier = 1) {
@@ -461,7 +464,7 @@ async function mutate(request, env) {
     for (const component of components) {
       const stockItem = await readRecord(db, "stock_items", component.stock_item_id);
       if (!stockItem) throw new Error("Um dos insumos selecionados não existe.");
-      const stockUnit = stockItem.unit || "un", inputUnit = component.unit || stockUnit, normalizedQuantity = recipeQuantity(component.quantity, inputUnit, stockUnit), current = componentTotals.get(component.stock_item_id);
+      const stockUnit = stockItem.unit || "un", inputUnit = component.unit || stockUnit, normalizedQuantity = recipeQuantity(component.quantity, inputUnit, stockUnit, stockItem), current = componentTotals.get(component.stock_item_id);
       componentTotals.set(component.stock_item_id, current ? { quantity: current.quantity + normalizedQuantity, input_quantity: current.quantity + normalizedQuantity, input_unit: stockUnit } : { quantity: normalizedQuantity, input_quantity: Number(component.quantity), input_unit: inputUnit });
     }
     const normalized = [...componentTotals].map(([stock_item_id, component]) => ({ stock_item_id, quantity: Math.round(component.quantity * 10000) / 10000, input_quantity: component.input_quantity, input_unit: component.input_unit }));
