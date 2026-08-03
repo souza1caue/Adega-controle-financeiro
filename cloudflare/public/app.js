@@ -189,7 +189,7 @@ function draw(){
     page ||= "summary";setupNav([]);
     const content=page==="summary"?overviewPage():page==="menu"?menuPage():page==="stock"?intelligentStockPage():page==="cash"?cashPage():page==="accounts"?accountsPage():page==="staff"?staffPageSimple():page==="devices"?devicesPage():page==="kitchen"?kitchenPage():printerPage();
     app.innerHTML=adminShell(content);
-    if(page==="summary")refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
+    if(page==="summary"||page==="stock")refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
     if(page==="kitchen")refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
     if(page==="adminPrinter"){refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);queueAutomaticPrint()}
   }
