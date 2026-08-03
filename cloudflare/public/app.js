@@ -159,7 +159,6 @@ function openModal(html){const labels=String(html).replace(/Cadernetas/g,"Fiado"
 function closeModal(){modal.close();modalBody.innerHTML=""}
 function heading(title,action=""){return `<div class="section-head"><div><div class="eyebrow">${esc(module||"Sistema")}</div><h1>${esc(title)}</h1></div>${action}</div>`}
 function empty(text){return `<div class="empty">${esc(text)}</div>`}
-function bagacoLandingPage(){return`<section class="bagaco-landing" role="status" aria-label="Carregando o projeto Bagaço da Laranja"><picture><source media="(max-width:700px)" srcset="/bagaco-da-laranja.png"><img src="/bagaco-da-laranja-wide.png" alt="O Bagaço da Laranja"></picture><div class="bagaco-loading"><span class="landing-spinner" aria-hidden="true"></span><b>Carregando o projeto…</b></div></section>`}
 
 function portal(){
   if(originToken){module="Frente de caixa";page="sales";draw();return}
@@ -477,7 +476,7 @@ document.addEventListener("submit",async event=>{
     if(form.dataset.form==="cart-note"){
       cart[fd.id]={...cart[fd.id],note:fd.note.trim()};saveCart();draw();if(fd.return_to_cart)mobileCartDialog();else closeModal();return;
     }
-    if(form.dataset.form==="cash-open"){await mutate({action:"cash.open",project_code:fd.project_code,opened_by:fd.opened_by,opening_amount:fd.opening_amount,note:fd.note},true);if(fd.project_code==="bagaco_laranja"){closeModal();app.classList.add("bagaco-operation");nav.innerHTML="";app.innerHTML=bagacoLandingPage();setTimeout(()=>{module="Admin";page="cash";draw()},4000);return}}
+    if(form.dataset.form==="cash-open")await mutate({action:"cash.open",project_code:fd.project_code,opened_by:fd.opened_by,opening_amount:fd.opening_amount,note:fd.note},true);
     if(form.dataset.form==="cash-movement")await mutate({action:"cash.movement",id:fd.id,type:fd.type,amount:fd.amount,responsible:fd.responsible,note:fd.note},true);
     if(form.dataset.form==="cash-close")await mutate({action:"cash.close",id:fd.id,counted_cash:fd.counted_cash,closed_by:fd.closed_by,note:fd.note},true);
     if(form.dataset.form==="sale-void")await mutate({action:"sale.void",id:fd.id,responsible:fd.responsible,reason:fd.reason},true);
