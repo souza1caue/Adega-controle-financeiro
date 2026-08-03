@@ -834,8 +834,7 @@ function parseBrazilianNumber(value) {
 
 function parseStockOrderText(rawText) {
   const lines = String(rawText || "").replace(/\|/g, "\n").split(/\r?\n/).map((line) => line.replace(/[*_`#]/g, "").trim()).filter((line) => line && !/^[-: ]+$/.test(line));
-  const fullText = lines.join("\n"), productHeader = lines.findIndex((line) => /(?:^|\s)c[oó]d(?:igo)?\.?(?:\s|$)/i.test(line));
-  if (productHeader < 0) throw new Error("Não foi possível localizar a tabela de produtos no PDF.");
+  const fullText = lines.join("\n"), detectedHeader = lines.findIndex((line) => /(?:^|\s)c[oó]d(?:igo)?\.?(?:\s|$)/i.test(line)), productHeader = Math.max(-1, detectedHeader);
   const supplierIndex = lines.findIndex((line) => /CNPJ\s*:/i.test(line));
   const supplier = supplierIndex > 0 ? lines[supplierIndex - 1] : "Fornecedor não identificado";
   const cnpj = (fullText.match(/CNPJ\s*:\s*([\d./-]+)/i)?.[1] || "").replace(/\D/g, "");
@@ -871,7 +870,7 @@ async function extractPdfInvoice(request, env) {
   const form = await request.formData(), file = form.get("file");
   if (!(file instanceof File) || file.type !== "application/pdf") return reply({ error: "Envie um arquivo PDF válido." }, 400);
   if (file.size > 10 * 1024 * 1024) return reply({ error: "O PDF deve ter no máximo 10 MB." }, 400);
-  const converted = await env.AI.toMarkdown({ name: file.name || "pedido.pdf", blob: file }, { conversionOptions: { output: { format: "text" }, pdf: { metadata: false } } });
+  const converted = await env.AI.toMarkdown({ name: file.name || "pedido.pdf", blob: file }, { conversionOptions: { pdf: { metadata: false } } });
   const document = Array.isArray(converted) ? converted[0] : converted;
   if (!document || document.format === "error" || !document.data) throw new Error(document?.error || "Não foi possível extrair o texto do PDF.");
   return reply(parseStockOrderText(document.data));
