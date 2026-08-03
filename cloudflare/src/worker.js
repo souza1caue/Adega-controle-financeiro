@@ -1,9 +1,10 @@
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
-const KINDS = ["menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_movements", "stock_items", "recipes", "inventories", "employees", "staff_shifts"];
+const KINDS = ["menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_movements", "stock_items", "recipes", "inventories", "employees", "staff_shifts", "device_access"];
 
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 const now = () => new Date().toISOString();
 const uid = () => crypto.randomUUID();
+const operationalDate = value => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value));
 
 async function sha256(value) {
   const bytes = new TextEncoder().encode(value);
@@ -44,18 +45,76 @@ async function isAdmin(request, env) {
   return Boolean(row?.ok);
 }
 
+async function authorizedDevice(request, env) {
+  const token = request.headers.get("x-device-access") || "";
+  if (!token) return null;
+  const tokenHash = await sha256(token);
+  const row = await env.DB.prepare("SELECT id,data FROM records WHERE kind='device_access' AND json_extract(data,'$.token_hash')=? LIMIT 1").bind(tokenHash).first();
+  if (!row) return null;
+  const device = JSON.parse(row.data);
+  if (device.revoked_at) return null;
+  return { id: row.id, ...device };
+}
+
 async function login(request, env) {
   if (!env.ADMIN_PASSWORD || !env.SESSION_SECRET) return reply({ error: "Segredos administrativos não configurados." }, 503);
-  const { password = "" } = await request.json();
-  if ((await sha256(password)) !== (await sha256(env.ADMIN_PASSWORD))) return reply({ error: "Senha inválida." }, 401);
+  const { password = "", remember = false } = await request.json();
+  const ipId = await sha256(request.headers.get("cf-connecting-ip") || "unknown");
+  const attempt = await readRecord(env.DB, "login_attempts", ipId) || { count: 0, window_started_at: now() };
+  const windowAge = Date.now() - new Date(attempt.window_started_at).getTime();
+  if (windowAge > 15 * 60 * 1000) { attempt.count = 0; attempt.window_started_at = now(); delete attempt.blocked_until; }
+  if (attempt.blocked_until && new Date(attempt.blocked_until).getTime() > Date.now()) return reply({ error: "Muitas tentativas. Aguarde 15 minutos antes de tentar novamente." }, 429);
+  if ((await sha256(password)) !== (await sha256(env.ADMIN_PASSWORD))) {
+    attempt.count += 1;
+    if (attempt.count >= 5) attempt.blocked_until = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    await putRecord(env.DB, "login_attempts", ipId, attempt).run();
+    return reply({ error: "Senha inválida." }, 401);
+  }
+  await env.DB.prepare("DELETE FROM records WHERE kind='login_attempts' AND id=?").bind(ipId).run();
   const token = `${uid()}${uid()}`;
   const tokenHash = await sha256(`${token}:${env.SESSION_SECRET}`);
-  const expires = new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString();
+  const expires = new Date(Date.now() + (remember ? 30 * 24 : 12) * 60 * 60 * 1000).toISOString();
   await env.DB.batch([
     env.DB.prepare("DELETE FROM sessions WHERE expires_at<=CURRENT_TIMESTAMP"),
     env.DB.prepare("INSERT INTO sessions(token_hash,expires_at) VALUES(?,?)").bind(tokenHash, expires),
   ]);
   return reply({ token, expires });
+}
+
+async function claimDevice(request, env) {
+  const { code = "" } = await request.json();
+  if (!/^\d{6}$/.test(String(code))) return reply({ error: "Informe o código de 6 dígitos." }, 400);
+  const codeHash = await sha256(String(code));
+  const row = await env.DB.prepare("SELECT id,data FROM records WHERE kind='device_access' AND json_extract(data,'$.claim_code_hash')=? AND json_extract(data,'$.claimed_at') IS NULL LIMIT 1").bind(codeHash).first();
+  if (!row) return reply({ error: "Código inválido ou já utilizado." }, 401);
+  const device = JSON.parse(row.data);
+  if (device.revoked_at || new Date(device.claim_expires_at).getTime() < Date.now()) return reply({ error: "Este código expirou. Gere outro no Admin." }, 401);
+  const token = `${uid()}${uid()}`;
+  device.token_hash = await sha256(token);
+  device.claimed_at = now();
+  delete device.claim_code_hash;
+  const result = await env.DB.prepare("UPDATE records SET data=?,updated_at=CURRENT_TIMESTAMP WHERE kind='device_access' AND id=? AND json_extract(data,'$.claimed_at') IS NULL").bind(JSON.stringify(device), row.id).run();
+  if (Number(result.meta?.changes || 0) !== 1) return reply({ error: "Este código já foi usado em outro aparelho." }, 409);
+  return reply({ access_token: token, role: device.role, label: device.label });
+}
+
+async function claimStaffAccess(request, env) {
+  const { invite_token = "" } = await request.json();
+  if (!invite_token) return reply({ error: "QR Code inválido." }, 400);
+  const tokenHash = await sha256(invite_token);
+  const row = await env.DB.prepare("SELECT id,data FROM records WHERE kind='staff_access' AND json_extract(data,'$.token_hash')=? LIMIT 1").bind(tokenHash).first();
+  if (!row) return reply({ error: "Este QR Code já foi utilizado ou não é válido." }, 401);
+  const access = JSON.parse(row.data);
+  if (access.claimed_at || access.revoked_at || new Date(access.expires_at).getTime() < Date.now()) return reply({ error: "Este QR Code já foi utilizado ou expirou." }, 401);
+  const cash = await readRecord(env.DB, "cash", access.cash_session_id);
+  if (!cash || cash.status !== "open") return reply({ error: "O caixa deste QR Code já foi fechado." }, 401);
+  const deviceToken = `${uid()}${uid()}`;
+  access.token_hash = await sha256(deviceToken);
+  access.claimed_at = now();
+  const result = await env.DB.prepare("UPDATE records SET data=?,updated_at=CURRENT_TIMESTAMP WHERE kind='staff_access' AND id=? AND json_extract(data,'$.claimed_at') IS NULL")
+    .bind(JSON.stringify(access), row.id).run();
+  if (Number(result.meta?.changes || 0) !== 1) return reply({ error: "Este QR Code já foi utilizado em outro aparelho." }, 409);
+  return reply({ access_token: deviceToken, employee_name: access.employee_name });
 }
 
 function required(value, label) {
@@ -115,6 +174,9 @@ async function orderOrigin(db, token) {
   if (access.revoked_at || new Date(access.expires_at).getTime() < Date.now()) throw new Error("O acesso deste funcionário expirou. Leia um novo QR Code.");
   const shift = await readRecord(db, "staff_shifts", access.shift_id);
   if (!shift || shift.status === "cancelled") throw new Error("O acesso deste funcionário foi revogado.");
+  if (!access.cash_session_id) throw new Error("Este acesso pertence a um caixa anterior. Leia um novo QR Code.");
+  const cash = await readRecord(db, "cash", access.cash_session_id);
+  if (!cash || cash.status !== "open") throw new Error("O caixa deste acesso foi fechado. Leia um novo QR Code no próximo caixa.");
   return { source_type: "staff", source_name: access.employee_name, source_shift_id: access.shift_id };
 }
 
@@ -159,12 +221,12 @@ function accountBalance(account) {
 }
 
 function assertAccountCanCharge(account, charge) {
-  if (account.blocked === true) throw new Error(`A caderneta de ${account.customer_name} está bloqueada para novos consumos.`);
+  if (account.blocked === true) throw new Error(`O fiado de ${account.customer_name} está bloqueado para novos consumos.`);
   const limit = Number(account.credit_limit || 0);
   const resultingBalance = Math.round((accountBalance(account) + Number(charge || 0)) * 100) / 100;
   if (limit > 0 && resultingBalance > limit + 0.001) {
     const available = Math.max(0, limit - accountBalance(account));
-    throw new Error(`Limite da caderneta excedido. Disponível: R$ ${available.toFixed(2).replace(".", ",")}.`);
+    throw new Error(`Limite do fiado excedido. Disponível: R$ ${available.toFixed(2).replace(".", ",")}.`);
   }
 }
 
@@ -197,12 +259,36 @@ async function cartItems(db, inputItems) {
 async function mutate(request, env) {
   const input = await request.json();
   const action = input.action;
-  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke"]);
-  if (adminActions.has(action) && !(await isAdmin(request, env))) return reply({ error: "Acesso administrativo necessário." }, 401);
+  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
+  const admin = await isAdmin(request, env);
   const db = env.DB;
+  const staffToken = request.headers.get("x-staff-access") || "";
+  const device = await authorizedDevice(request, env);
+  const frontActions = new Set(["sale.checkout", "account.addItem", "account.create", "account.update", "account.receivePayment", "account.cancelItem", "kitchen.status"]);
+  if (staffToken) {
+    if (!frontActions.has(action)) return reply({ error: "Este QR Code permite acesso somente à Frente de Caixa." }, 403);
+    await orderOrigin(db, staffToken);
+    input.origin_token = staffToken;
+  } else if (device) {
+    const allowed = device.role === "front" ? frontActions : new Set(["kitchen.status", "kitchen.printed", "kitchen.requeue"]);
+    if (!allowed.has(action)) return reply({ error: `Este dispositivo possui acesso somente ${device.role === "front" ? "à Frente de Caixa" : "à Cozinha"}.` }, 403);
+  } else if (!admin) return reply({ error: "Faça login para acessar o sistema." }, 401);
+  if (adminActions.has(action) && !admin) return reply({ error: "Acesso administrativo necessário." }, 401);
   const id = input.id || uid();
 
-  if (action === "menu.create" || action === "menu.update") {
+  if (action === "device.create") {
+    if (!["front", "kitchen"].includes(input.role)) throw new Error("Escolha Caixa ou Cozinha.");
+    required(input.label, "o nome do dispositivo");
+    const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
+    const access = { label: input.label.trim(), role: input.role, claim_code_hash: await sha256(code), claim_expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(), created_at: now() };
+    await putRecord(db, "device_access", id, access).run();
+    return reply({ ok: true, id, code, expires_at: access.claim_expires_at });
+  } else if (action === "device.revoke") {
+    const access = await readRecord(db, "device_access", id);
+    if (!access) throw new Error("Dispositivo não encontrado.");
+    access.revoked_at = now();
+    await putRecord(db, "device_access", id, access).run();
+  } else if (action === "menu.create" || action === "menu.update") {
     required(input.name, "o nome do item");
     const item = { ...(action === "menu.update" ? await readRecord(db, "menu", id) : {}), name: input.name.trim(), price: Number(input.price), category: input.category === "Comidas" ? "Comidas" : "Bebidas" };
     item[action === "menu.create" ? "created_at" : "updated_at"] = now();
@@ -221,10 +307,12 @@ async function mutate(request, env) {
   } else if (action === "staff.shift.save") {
     const employee = await readRecord(db, "employees", input.employee_id);
     if (!employee) throw new Error("Funcionário não encontrado.");
-    required(input.work_date, "a data de trabalho");
-    const duplicate = await db.prepare("SELECT id FROM records WHERE kind='staff_shifts' AND json_extract(data,'$.employee_id')=? AND json_extract(data,'$.work_date')=? AND json_extract(data,'$.status')!='cancelled' LIMIT 1").bind(input.employee_id, input.work_date).first();
-    if (duplicate && duplicate.id !== id) throw new Error("Este funcionário já está registrado nesta data.");
-    const shift = { ...(await readRecord(db, "staff_shifts", id) || {}), employee_id: input.employee_id, employee_name: employee.name, group: employee.group, work_date: input.work_date, daily_rate: amount(input.daily_rate, "a diária", false), status: "confirmed", note: (input.note || "").trim(), updated_at: now() };
+    const open = await db.prepare("SELECT id,data FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!open) throw new Error("Abra o caixa antes de montar a equipe deste turno.");
+    const cash = JSON.parse(open.data);
+    const duplicate = await db.prepare("SELECT id FROM records WHERE kind='staff_shifts' AND json_extract(data,'$.employee_id')=? AND json_extract(data,'$.cash_session_id')=? AND json_extract(data,'$.status')!='cancelled' LIMIT 1").bind(input.employee_id, open.id).first();
+    if (duplicate && duplicate.id !== id) throw new Error("Este funcionário já está registrado neste caixa.");
+    const shift = { ...(await readRecord(db, "staff_shifts", id) || {}), employee_id: input.employee_id, employee_name: employee.name, group: employee.group, cash_session_id: open.id, work_date: operationalDate(cash.opened_at), daily_rate: amount(input.daily_rate, "a diária", false), status: "confirmed", note: (input.note || "").trim(), updated_at: now() };
     if (!shift.created_at) shift.created_at = now();
     await putRecord(db, "staff_shifts", id, shift).run();
   } else if (action === "staff.shift.pay") {
@@ -248,13 +336,31 @@ async function mutate(request, env) {
     if (!shift) throw new Error("Diária não encontrada.");
     if (shift.status === "paid") throw new Error("Não é possível cancelar uma diária já paga.");
     shift.status = "cancelled"; shift.cancelled_at = now();
-    await putRecord(db, "staff_shifts", id, shift).run();
+    const accessRows = await db.prepare("SELECT id,data FROM records WHERE kind='staff_access' AND json_extract(data,'$.shift_id')=? AND json_extract(data,'$.revoked_at') IS NULL").bind(id).all();
+    const statements = [putRecord(db, "staff_shifts", id, shift)];
+    for (const row of accessRows.results) {
+      const access = JSON.parse(row.data);
+      access.revoked_at = now();
+      access.revoked_reason = "shift_cancelled";
+      statements.push(putRecord(db, "staff_access", row.id, access));
+    }
+    await db.batch(statements);
   } else if (action === "staff.access.create") {
     const shift = await readRecord(db, "staff_shifts", id);
     if (!shift || shift.status === "cancelled" || shift.group !== "Adega") throw new Error("O acesso é exclusivo para funcionários da Adega escalados no dia.");
+    const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!open) throw new Error("Abra o caixa antes de gerar o acesso.");
+    if (!shift.cash_session_id) {
+      const cash = await readRecord(db, "cash", open.id);
+      if (shift.work_date !== operationalDate(cash.opened_at)) throw new Error("Este funcionário não está escalado no caixa aberto.");
+      shift.cash_session_id = open.id;
+      shift.updated_at = now();
+      await putRecord(db, "staff_shifts", id, shift).run();
+    }
+    if (shift.cash_session_id !== open.id) throw new Error("Este funcionário não está escalado no caixa aberto.");
     const rawToken = `${uid()}${uid()}`;
     const accessId = uid();
-    const access = { shift_id: id, employee_name: shift.employee_name, token_hash: await sha256(rawToken), created_at: now(), expires_at: `${shift.work_date}T23:59:59-03:00` };
+    const access = { shift_id: id, cash_session_id: open.id, employee_name: shift.employee_name, token_hash: await sha256(rawToken), created_at: now(), expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() };
     const previous = await db.prepare("SELECT id,data FROM records WHERE kind='staff_access' AND json_extract(data,'$.shift_id')=? AND json_extract(data,'$.revoked_at') IS NULL").bind(id).all();
     const statements = previous.results.map(row => { const oldAccess = JSON.parse(row.data); oldAccess.revoked_at = now(); return putRecord(db, "staff_access", row.id, oldAccess); });
     statements.push(putRecord(db, "staff_access", accessId, access));
@@ -365,14 +471,18 @@ async function mutate(request, env) {
     await db.prepare("DELETE FROM records WHERE kind='menu' AND id=?").bind(id).run();
   } else if (action === "account.create") {
     required(input.customer_name, "o nome do cliente");
-    await putRecord(db, "accounts", id, { customer_name: input.customer_name.trim(), note: (input.note || "").trim(), credit_limit: amount(input.credit_limit || 0, "o limite da caderneta"), blocked: input.blocked === true, created_at: now().slice(0, 10), items: [], payments_total: 0 }).run();
+    const accountType = input.account_type === "owner" ? "owner" : "customer";
+    if (accountType === "owner" && !admin) throw new Error("Somente o proprietário pode criar uma ficha de proprietário.");
+    await putRecord(db, "accounts", id, { account_type: accountType, customer_name: input.customer_name.trim(), note: (input.note || "").trim(), credit_limit: amount(input.credit_limit || 0, "o limite do fiado"), blocked: input.blocked === true, created_at: now().slice(0, 10), items: [], payments_total: 0 }).run();
   } else if (action === "account.update") {
     const account = await readRecord(db, "accounts", id);
-    if (!account) throw new Error("Caderneta não encontrada.");
+    if (!account) throw new Error("Fiado não encontrado.");
     required(input.customer_name, "o nome do cliente");
     account.customer_name = input.customer_name.trim();
+    if (input.account_type === "owner" && !admin) throw new Error("Somente o proprietário pode classificar uma ficha como proprietário.");
+    if (admin) account.account_type = input.account_type === "owner" ? "owner" : "customer";
     account.note = (input.note || "").trim();
-    account.credit_limit = amount(input.credit_limit || 0, "o limite da caderneta");
+    account.credit_limit = amount(input.credit_limit || 0, "o limite do fiado");
     account.blocked = input.blocked === true;
     delete account.phone;
     delete account.due_days;
@@ -402,11 +512,11 @@ async function mutate(request, env) {
     } else if (entry.menu_id) {
       const product = await readRecord(db, "menu", entry.menu_id);
       if (product?.stock_controlled) {
-        const movement = stockMovement(db, entry.menu_id, product, "sale", entry.quantity, { reason: "Consumo em caderneta", responsible: "Sistema", reference_id: orderId, legacy_menu: true });
+        const movement = stockMovement(db, entry.menu_id, product, "sale", entry.quantity, { reason: "Consumo no fiado", responsible: "Sistema", reference_id: orderId, legacy_menu: true });
         statements.push(putRecord(db, "menu", entry.menu_id, product), movement);
       }
     }
-    if (input.print_order || input.send_to_kitchen) statements.push(putRecord(db, "kitchen", uid(), { ...entry, customer_name: account.customer_name, note: (input.note || "").trim(), origin: "Caderneta", status: "pending", print_status: "pending", print_count: 0 }));
+    if (input.print_order || input.send_to_kitchen) statements.push(putRecord(db, "kitchen", uid(), { ...entry, customer_name: account.customer_name, note: (input.note || "").trim(), origin: "Fiado", status: "pending", print_status: "pending", print_count: 0 }));
     await db.batch(statements);
   } else if (action === "account.cancelItem") {
     const account = await readRecord(db, "accounts", id);
@@ -446,23 +556,46 @@ async function mutate(request, env) {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Conta não encontrada.");
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
-    if (!open) throw new Error("Abra o caixa antes de receber uma caderneta.");
+    if (!open) throw new Error("Abra o caixa antes de receber um fiado.");
     required(input.payment_method, "a forma de pagamento");
     if (!["Dinheiro", "Pix", "Cartão"].includes(input.payment_method)) throw new Error("Forma de pagamento inválida.");
     required(input.responsible, "o responsável pelo recebimento");
     const received = amount(input.amount, "um valor", false);
     const balance = accountBalance(account);
     if (received > balance + 0.001) throw new Error(`O valor informado é maior que o saldo de R$ ${balance.toFixed(2).replace('.', ',')}.`);
+    const settlementType = ["equal", "items"].includes(input.settlement_type) ? input.settlement_type : "free";
+    let allocations = [];
+    if (settlementType === "items") {
+      const requested = Array.isArray(input.allocations) ? input.allocations : [];
+      if (!requested.length) throw new Error("Selecione ao menos um item para receber.");
+      const previousRows = await db.prepare("SELECT data FROM records WHERE kind='account_payments' AND json_extract(data,'$.account_id')=?").bind(id).all();
+      const previouslyPaid = new Map();
+      for (const row of previousRows.results) {
+        const previous = JSON.parse(row.data);
+        if (previous.voided_at) continue;
+        for (const allocation of previous.allocations || []) previouslyPaid.set(allocation.item_id, (previouslyPaid.get(allocation.item_id) || 0) + Number(allocation.quantity || 0));
+      }
+      const itemMap = new Map((account.items || []).filter((item) => !item.cancelled_at).map((item) => [item.id, item]));
+      allocations = requested.map((allocation) => {
+        const item = itemMap.get(allocation.item_id);
+        if (!item) throw new Error("Um dos itens selecionados não está mais disponível.");
+        const selectedQuantity = Number(allocation.quantity);
+        if (!Number.isInteger(selectedQuantity) || selectedQuantity <= 0) throw new Error("Informe quantidades inteiras maiores que zero.");
+        const availableQuantity = Number(item.quantity || 0) - Number(previouslyPaid.get(item.id) || 0);
+        if (selectedQuantity > availableQuantity) throw new Error(`A quantidade selecionada de ${item.description} é maior que a quantidade pendente.`);
+        return { item_id: item.id, description: item.description, quantity: selectedQuantity, unit_price: Number(item.price), amount: Math.round(selectedQuantity * Number(item.price) * 100) / 100 };
+      });
+      const allocationTotal = Math.round(allocations.reduce((sum, allocation) => sum + allocation.amount, 0) * 100) / 100;
+      if (Math.abs(allocationTotal - received) > 0.001) throw new Error("O valor recebido não corresponde aos itens selecionados.");
+    }
     const paymentId = uid();
     const createdAt = now();
-    const payment = { account_id: id, customer_name: account.customer_name, amount: received, payment_method: input.payment_method, responsible: input.responsible.trim(), note: (input.note || "").trim(), cash_session_id: open.id, created_at: createdAt };
+    const payment = { account_id: id, customer_name: account.customer_name, amount: received, payment_method: input.payment_method, responsible: input.responsible.trim(), note: (input.note || "").trim(), settlement_type: settlementType, split_people: settlementType === "equal" ? Math.max(2, Number(input.split_people || 2)) : null, allocations, cash_session_id: open.id, created_at: createdAt };
     const remainingBalance = Math.max(0, Math.round((balance - received) * 100) / 100);
     account.payments_total = Math.round((Number(account.payments_total || 0) + received) * 100) / 100;
     account.last_payment_at = createdAt;
-    const accountStatement = remainingBalance <= 0.001
-      ? db.prepare("DELETE FROM records WHERE kind='accounts' AND id=?").bind(id)
-      : putRecord(db, "accounts", id, account);
-    await db.batch([accountStatement, putRecord(db, "account_payments", paymentId, payment)]);
+    if (remainingBalance <= 0.001) account.closed_at = createdAt;
+    await db.batch([putRecord(db, "accounts", id, account), putRecord(db, "account_payments", paymentId, payment)]);
     return reply({ ok: true, id: paymentId, balance_after: remainingBalance, closed: remainingBalance <= 0.001 });
   } else if (action === "sale.checkout") {
     const items = await cartItems(db, input.items);
@@ -479,15 +612,15 @@ async function mutate(request, env) {
       const accountId = input.account_id || uid();
       let account = await readRecord(db, "accounts", accountId);
       if (!account) {
-        required(customerName, "o cliente para criar a caderneta");
-        account = { customer_name: customerName, note: "", credit_limit: 0, blocked: false, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
+        required(customerName, "o cliente para criar o fiado");
+        account = { account_type: "customer", customer_name: customerName, note: "", credit_limit: 0, blocked: false, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
       }
       assertAccountCanCharge(account, items.reduce((sum, item) => sum + Number(item.quantity) * Number(item.price), 0));
-      const accountEntries = items.map((item) => ({ id: uid(), menu_id: item.menu_id, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
+      const accountEntries = items.map((item) => ({ id: uid(), menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
-      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: account.customer_name, payment_method: "Caderneta", account_id: accountId, account_item_id: entry.id, order_id: orderId, created_at: createdAt, ...origin }));
-      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: account.customer_name, note, origin: "Caderneta", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
+      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, item_category: entry.item_category, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: account.customer_name, payment_method: "Caderneta", account_id: accountId, account_item_id: entry.id, order_id: orderId, created_at: createdAt, ...origin }));
+      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: account.customer_name, note, origin: "Fiado", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
     } else {
       const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
       if (!open) throw new Error("Abra o caixa no Admin antes de usar a opção Pagar agora.");
@@ -495,7 +628,7 @@ async function mutate(request, env) {
       if (shouldPrint) required(customerName, "o nome do cliente para enviar o pedido à cozinha");
       for (const item of items) {
         const saleId = uid();
-        statements.push(putRecord(db, "sales", saleId, { menu_id: item.menu_id, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, payment_method: input.payment_method, cash_session_id: open.id, order_id: orderId, created_at: createdAt, ...origin }));
+        statements.push(putRecord(db, "sales", saleId, { menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, payment_method: input.payment_method, cash_session_id: open.id, order_id: orderId, created_at: createdAt, ...origin }));
       }
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: customerName, note, origin: "Venda", payment_method: input.payment_method, created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
     }
@@ -527,14 +660,14 @@ async function mutate(request, env) {
     await db.batch(statements);
   } else if (action === "sale.delete") {
     const sale = await readRecord(db, "sales", id);
-    if (sale?.account_id) throw new Error("Consumos de caderneta não podem ser apagados. Use o cancelamento com responsável e justificativa.");
+    if (sale?.account_id) throw new Error("Consumos do fiado não podem ser apagados. Use o cancelamento com responsável e justificativa.");
     await db.prepare("DELETE FROM records WHERE kind='sales' AND id=?").bind(id).run();
   } else if (action === "sale.void") {
     required(input.reason, "a justificativa do cancelamento");
     const sale = await readRecord(db, "sales", id);
     if (!sale) throw new Error("Lançamento não encontrado.");
     if (sale.voided_at) throw new Error("Este lançamento já foi cancelado.");
-    if (sale.account_id) throw new Error("Cancele este consumo diretamente na caderneta para manter o saldo e o estoque consistentes.");
+    if (sale.account_id) throw new Error("Cancele este consumo diretamente no fiado para manter o saldo e o estoque consistentes.");
     sale.voided_at = now();
     sale.void_reason = input.reason.trim();
     sale.voided_by = (input.responsible || "Admin").trim();
@@ -588,9 +721,10 @@ async function mutate(request, env) {
     await putRecord(db, "kitchen", id, order).run();
   } else if (action === "cash.open") {
     required(input.opened_by, "o responsável pela abertura");
+    const projectCode = input.project_code === "bagaco_laranja" ? "bagaco_laranja" : "adega_regular";
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' LIMIT 1").first();
     if (open) throw new Error("Já existe um caixa aberto.");
-    await putRecord(db, "cash", id, { status: "open", opened_at: now(), opened_by: input.opened_by.trim(), opening_amount: amount(input.opening_amount, "o valor inicial"), opening_note: (input.note || "").trim(), movements: [], closed_at: "" }).run();
+    await putRecord(db, "cash", id, { status: "open", project_code: projectCode, project_name: projectCode === "bagaco_laranja" ? "Bagaço da Laranja" : "Adega Camisa 10", opened_at: now(), opened_by: input.opened_by.trim(), opening_amount: amount(input.opening_amount, "o valor inicial"), opening_note: (input.note || "").trim(), movements: [], closed_at: "" }).run();
   } else if (action === "cash.movement") {
     const cash = await readRecord(db, "cash", id);
     if (!cash || cash.status !== "open") throw new Error("Caixa aberto não encontrado.");
@@ -627,7 +761,15 @@ async function mutate(request, env) {
       grouped.set(key, current);
     }
     cash.items = [...grouped.values()].sort((a, b) => a.description.localeCompare(b.description));
-    await putRecord(db, "cash", id, cash).run();
+    const accessRows = await db.prepare("SELECT id,data FROM records WHERE kind='staff_access' AND json_extract(data,'$.cash_session_id')=? AND json_extract(data,'$.revoked_at') IS NULL").bind(id).all();
+    const statements = [putRecord(db, "cash", id, cash)];
+    for (const row of accessRows.results) {
+      const access = JSON.parse(row.data);
+      access.revoked_at = now();
+      access.revoked_reason = "cash_closed";
+      statements.push(putRecord(db, "staff_access", row.id, access));
+    }
+    await db.batch(statements);
   } else throw new Error("Ação desconhecida.");
   return reply({ ok: true, id });
 }
@@ -636,8 +778,26 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
-      if (url.pathname === "/api/state" && request.method === "GET") return reply(await state(env.DB));
+      if (url.pathname === "/api/state" && request.method === "GET") {
+        const staffToken = request.headers.get("x-staff-access") || "";
+        const admin = await isAdmin(request, env);
+        const device = await authorizedDevice(request, env);
+        if (staffToken) await orderOrigin(env.DB, staffToken);
+        else if (!admin && !device) return reply({ error: "Faça login para acessar o sistema." }, 401);
+        const result = await state(env.DB);
+        for (const access of Object.values(result.device_access || {})) {
+          delete access.token_hash;
+          delete access.claim_code_hash;
+        }
+        if (!admin) {
+          const allowed = device?.role === "kitchen" ? new Set(["kitchen"]) : new Set(["menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_items", "recipes"]);
+          for (const kind of KINDS) if (!allowed.has(kind)) result[kind] = {};
+        }
+        return reply(result);
+      }
       if (url.pathname === "/api/login" && request.method === "POST") return await login(request, env);
+      if (url.pathname === "/api/device/claim" && request.method === "POST") return await claimDevice(request, env);
+      if (url.pathname === "/api/staff/claim" && request.method === "POST") return await claimStaffAccess(request, env);
       if (url.pathname === "/api/mutate" && request.method === "POST") return await mutate(request, env);
       if (url.pathname.startsWith("/api/")) return reply({ error: "Rota não encontrada." }, 404);
       return env.ASSETS.fetch(request);
