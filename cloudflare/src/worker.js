@@ -835,31 +835,20 @@ function parseBrazilianNumber(value) {
 function parseStockOrderText(rawText) {
   const lines = String(rawText || "").replace(/\|/g, "\n").split(/\r?\n/).map((line) => line.replace(/[*_`#]/g, "").trim()).filter((line) => line && !/^[-: ]+$/.test(line));
   const fullText = lines.join("\n"), detectedHeader = lines.findIndex((line) => /(?:^|\s)c[oó]d(?:igo)?\.?(?:\s|$)/i.test(line)), productHeader = Math.max(-1, detectedHeader);
-  const supplierIndex = lines.findIndex((line) => /CNPJ\s*:/i.test(line));
-  const supplier = supplierIndex > 0 ? lines[supplierIndex - 1] : "Fornecedor não identificado";
+  const supplierLine = lines.find((line) => /CNPJ\s*:/i.test(line)) || "";
+  const supplier = supplierLine.split(/CNPJ\s*:/i)[0].trim() || "Fornecedor não identificado";
   const cnpj = (fullText.match(/CNPJ\s*:\s*([\d./-]+)/i)?.[1] || "").replace(/\D/g, "");
   const invoiceNumber = fullText.match(/N[º°o.]?\s*ped\s*:\s*(\d{6,})/i)?.[1] || fullText.match(/Pedido\s*:?\s*(\d{6,})/i)?.[1] || "";
   if (!invoiceNumber) throw new Error("Não foi possível identificar o número do pedido no PDF.");
-  const codeIndexes = [];
-  for (let index = productHeader + 1; index < lines.length; index += 1) {
-    if (/valor\s+total/i.test(lines[index])) break;
-    if (/^\d{4,10}$/.test(lines[index])) codeIndexes.push(index);
-  }
   const unitMap = { UN: "un", UND: "un", UNID: "un", PT: "pacote", PCT: "pacote", CX: "caixa", KG: "kg", G: "g", GL: "galão", LT: "L", L: "L", ML: "ml", GF: "garrafa", GFA: "garrafa", LATA: "lata", FD: "fardo" };
-  const items = [];
-  for (let position = 0; position < codeIndexes.length; position += 1) {
-    const start = codeIndexes[position], end = codeIndexes[position + 1] || lines.findIndex((line, index) => index > start && /valor\s+total/i.test(line));
-    const chunk = lines.slice(start, end > start ? end : lines.length), quantityValue = parseBrazilianNumber(chunk[1]), rawUnit = String(chunk[2] || "UN").toUpperCase();
-    if (!Number.isFinite(quantityValue) || quantityValue <= 0) continue;
-    const numericIndexes = chunk.map((line, index) => /^\d+(?:[.,]\d+)?$/.test(line) ? index : -1).filter((index) => index > 2);
-    if (numericIndexes.length < 2) continue;
-    const unitCost = parseBrazilianNumber(chunk[numericIndexes[numericIndexes.length - 2]]), priceBlockStart = numericIndexes[Math.max(0, numericIndexes.length - 3)];
-    let descriptionStart = 3;
-    while (descriptionStart < priceBlockStart && /^\d+(?:[.,]\d+)?$/.test(chunk[descriptionStart])) descriptionStart += 1;
-    const name = chunk.slice(descriptionStart, priceBlockStart).join(" ").replace(/\s+/g, " ").trim();
-    if (!name || !Number.isFinite(unitCost)) continue;
-    items.push({ name, sku: chunk[0], barcode: "", unit: unitMap[rawUnit] || "un", quantity: quantityValue, unit_cost: unitCost });
-  }
+  const productText = lines.slice(productHeader + 1).join("\n"), rowPattern = /\b(\d{4,10})\s+(\d+(?:[.,]\d+)?)\s+([A-Z]{1,6})\s+/g, rowMatches = [...productText.matchAll(rowPattern)];
+  const items = rowMatches.map((match, position) => {
+    const end = rowMatches[position + 1]?.index ?? productText.search(/valor\s+total/i), block = productText.slice(match.index + match[0].length, end > match.index ? end : productText.length);
+    const prices = [...block.matchAll(/\d+[.,]\d{2}/g)];
+    if (prices.length < 2) return null;
+    const priceStart = prices[Math.max(0, prices.length - 3)].index, name = block.slice(0, priceStart).replace(/\s+/g, " ").trim(), unitCost = parseBrazilianNumber(prices[prices.length - 2][0]), quantityValue = parseBrazilianNumber(match[2]);
+    return name && Number.isFinite(unitCost) && quantityValue > 0 ? { name, sku: match[1], barcode: "", unit: unitMap[match[3]] || "un", quantity: quantityValue, unit_cost: unitCost } : null;
+  }).filter(Boolean);
   if (!items.length) throw new Error("Nenhum produto válido foi reconhecido no PDF.");
   return { invoice_key: `pdf:${cnpj || supplier.toLocaleLowerCase().replace(/\W/g, "")}:${invoiceNumber}`, invoice_number: invoiceNumber, supplier, items, source_type: "pdf" };
 }
