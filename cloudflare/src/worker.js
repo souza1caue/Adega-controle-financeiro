@@ -619,6 +619,7 @@ async function mutate(request, env) {
       const requested = Array.isArray(input.allocations) ? input.allocations : [];
       if (!requested.length) throw new Error("Selecione ao menos um item para receber.");
       const previousRows = await db.prepare("SELECT data FROM records WHERE kind='account_payments' AND json_extract(data,'$.account_id')=?").bind(id).all();
+      if (previousRows.results.some((row) => !JSON.parse(row.data).voided_at)) throw new Error("O pagamento por itens só está disponível antes do primeiro pagamento desta ficha.");
       const previouslyPaid = new Map();
       for (const row of previousRows.results) {
         const previous = JSON.parse(row.data);
