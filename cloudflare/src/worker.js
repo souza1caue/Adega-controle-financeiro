@@ -400,7 +400,7 @@ async function mutate(request, env) {
   } else if (action === "stock.item.move") {
     const item = await readRecord(db, "stock_items", id);
     if (!item) throw new Error("Insumo não encontrado.");
-    if (!["in", "out", "loss", "adjustment"].includes(input.type)) throw new Error("Tipo de movimentação inválido.");
+    if (!["in", "loss", "adjustment"].includes(input.type)) throw new Error("Tipo de movimentação inválido.");
     required(input.responsible, "o responsável");
     required(input.reason, "o motivo");
     const balance = await db.prepare("SELECT quantity FROM stock_balances WHERE id=?").bind(id).first();
@@ -511,7 +511,7 @@ async function mutate(request, env) {
     const item = await readRecord(db, "menu", id);
     if (!item) throw new Error("Produto não encontrado.");
     if (!item.stock_controlled) throw new Error("Ative o controle de estoque deste produto primeiro.");
-    if (!["in", "out", "loss", "adjustment"].includes(input.type)) throw new Error("Tipo de movimentação inválido.");
+    if (!["in", "loss", "adjustment"].includes(input.type)) throw new Error("Tipo de movimentação inválido.");
     required(input.responsible, "o responsável");
     required(input.reason, "o motivo");
     const current = Number(item.stock_quantity || 0);
