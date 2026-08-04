@@ -262,7 +262,7 @@ async function cartItems(db, inputItems) {
 async function mutate(request, env) {
   const input = await request.json();
   const action = input.action;
-  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "stock.invoice.import", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "event.save", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
+  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "stock.purchase.batch", "stock.invoice.import", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "event.save", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
   const admin = await isAdmin(request, env);
   const db = env.DB;
   const staffToken = request.headers.get("x-staff-access") || "";
@@ -399,6 +399,48 @@ async function mutate(request, env) {
     const linked = await db.prepare("SELECT id FROM records WHERE kind='recipes' AND EXISTS (SELECT 1 FROM json_each(json_extract(data,'$.components')) WHERE json_extract(value,'$.stock_item_id')=?) LIMIT 1").bind(id).first();
     if (linked) throw new Error("Este insumo está vinculado a uma ficha técnica. Remova o vínculo antes de excluí-lo.");
     await db.prepare("DELETE FROM records WHERE kind='stock_items' AND id=?").bind(id).run();
+  } else if (action === "stock.purchase.batch") {
+    required(input.responsible, "o responsável");
+    const lines = Array.isArray(input.items) ? input.items : [];
+    if (!lines.length || lines.length > 50) throw new Error("A compra deve ter entre 1 e 50 produtos.");
+    const statements = [], usedIds = new Set(), purchaseId = uid();
+    let created = 0, totalUnits = 0, totalCost = 0;
+    for (const [index, line] of lines.entries()) {
+      const itemId = line.id || uid();
+      if (usedIds.has(itemId)) throw new Error("O mesmo produto foi adicionado mais de uma vez. Edite a linha existente.");
+      usedIds.add(itemId);
+      let item = line.id ? await readRecord(db, "stock_items", itemId) : null;
+      if (line.id && !item) throw new Error(`Produto ${index + 1} não encontrado.`);
+      if (!item) {
+        required(line.name, `o nome do produto ${index + 1}`);
+        item = { name: line.name.trim(), unit: (line.unit || "un").trim(), package_size: null, package_measure: "", portion_size: null, portion_measure: "", stock_minimum: 0, cost_price: 0, sku: "", barcode: "", supplier: "", stock_quantity: 0, created_at: now() };
+        created += 1;
+      }
+      const packageQuantity = stockNumber(line.package_quantity, `a quantidade de embalagens do produto ${item.name}`, false);
+      const unitsPerPackage = Number(line.units_per_package);
+      if (!Number.isInteger(unitsPerPackage) || unitsPerPackage <= 0) throw new Error(`Informe as unidades por embalagem de ${item.name}.`);
+      const movementQuantity = packageQuantity * unitsPerPackage;
+      const hasCost = line.package_cost !== "" && line.package_cost != null;
+      const packageCost = hasCost ? amount(line.package_cost, `o valor da embalagem de ${item.name}`) : 0;
+      const entryCost = hasCost ? packageCost / unitsPerPackage : null;
+      const balance = line.id ? await db.prepare("SELECT quantity FROM stock_balances WHERE id=?").bind(itemId).first() : null;
+      const current = Number(balance?.quantity || 0);
+      item.purchase_unit = String(line.purchase_unit || "un").trim();
+      item.units_per_package = unitsPerPackage;
+      item.updated_at = now();
+      if (entryCost != null) {
+        item.cost_price = Math.round(((current * Number(item.cost_price || 0) + movementQuantity * entryCost) / (current + movementQuantity)) * 100) / 100;
+        item.last_cost_price = entryCost;
+      }
+      statements.push(putRecord(db, "stock_items", itemId, item));
+      if (!line.id) statements.push(db.prepare("INSERT INTO stock_balances(id,quantity) VALUES(?,0)").bind(itemId));
+      statements.push(...atomicStockChange(db, itemId, item, "in", movementQuantity, { unit_cost: entryCost ?? item.cost_price, responsible: input.responsible, reason: (input.note || "Compra em lote").trim(), reference_id: purchaseId }));
+      totalUnits += movementQuantity;
+      totalCost += packageQuantity * packageCost;
+    }
+    statements.push(putRecord(db, "stock_purchases", purchaseId, { responsible: input.responsible.trim(), note: (input.note || "").trim(), items_count: lines.length, total_units: totalUnits, total_cost: Math.round(totalCost * 100) / 100, created_at: now() }));
+    await db.batch(statements);
+    return reply({ ok: true, id: purchaseId, items_count: lines.length, created, total_units: totalUnits, total_cost: Math.round(totalCost * 100) / 100 });
   } else if (action === "stock.item.move") {
     const item = await readRecord(db, "stock_items", id);
     if (!item) throw new Error("Insumo não encontrado.");
