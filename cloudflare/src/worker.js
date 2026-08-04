@@ -387,6 +387,8 @@ async function mutate(request, env) {
     const packageSize = input.package_size === "" || input.package_size == null ? null : stockNumber(input.package_size, "o conteúdo da embalagem", false);
     const portionSize = input.portion_size === "" || input.portion_size == null ? null : stockNumber(input.portion_size, "o porcionamento", false);
     const item = { ...(await readRecord(db, "stock_items", id) || {}), name: input.name.trim(), unit: (input.unit || "un").trim(), package_size: packageSize, package_measure: packageSize == null ? "" : (input.package_measure || "ml").trim(), portion_size: portionSize, portion_measure: portionSize == null ? "" : (input.portion_measure || input.package_measure || "ml").trim(), stock_minimum: stockNumber(input.stock_minimum || 0, "o estoque mínimo"), cost_price: amount(input.cost_price || 0, "o custo"), sku: (input.sku || "").trim(), barcode: (input.barcode || "").trim(), supplier: (input.supplier || "").trim(), updated_at: now() };
+    if (input.purchase_unit) item.purchase_unit = String(input.purchase_unit).trim();
+    if (input.units_per_package != null && input.units_per_package !== "") { const units = Number(input.units_per_package); if (!Number.isInteger(units) || units <= 0) throw new Error("As unidades por embalagem devem ser um número inteiro maior que zero."); item.units_per_package = units; }
     if (item.stock_quantity == null) item.stock_quantity = 0;
     if (!item.created_at) item.created_at = now();
     await db.batch([
@@ -409,6 +411,8 @@ async function mutate(request, env) {
     const movementType = input.type === "adjustment" ? (desired >= current ? "adjustment_in" : "out") : input.type;
     const movementQty = input.type === "adjustment" ? Math.abs(desired - current) : input.quantity;
     if (Number(movementQty) === 0) throw new Error("O novo saldo é igual ao saldo atual.");
+    if (input.type === "in" && input.purchase_unit) item.purchase_unit = String(input.purchase_unit).trim();
+    if (input.type === "in" && input.units_per_package != null && input.units_per_package !== "") { const units = Number(input.units_per_package); if (!Number.isInteger(units) || units <= 0) throw new Error("As unidades por embalagem devem ser um número inteiro maior que zero."); item.units_per_package = units; }
     if (input.type === "in" && input.unit_cost !== "" && input.unit_cost != null) {
       const entryCost = amount(input.unit_cost, "o custo");
       item.cost_price = Math.round(((current * Number(item.cost_price || 0) + Number(movementQty) * entryCost) / (current + Number(movementQty))) * 100) / 100;

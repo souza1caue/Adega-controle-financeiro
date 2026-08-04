@@ -79,3 +79,5 @@ button,.button,.product-tile{touch-action:manipulation}
 .kitchen-order-items{display:grid;gap:6px}.kitchen-order-items b{display:block;line-height:1.35}
 .quick-stock-link{display:flex;align-items:center;justify-content:space-between;gap:14px}.quick-stock-link>div{display:grid;gap:3px}.quick-stock-link small{color:var(--muted)}.quick-stock-link button{flex:0 0 auto}
 @media(max-width:600px){.quick-stock-link{align-items:stretch;flex-direction:column}.quick-stock-link button{width:100%}}
+.purchase-calculation{display:flex;justify-content:space-between;gap:16px;margin:-4px 0 16px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:#12130f;color:var(--muted)}.purchase-calculation b{color:var(--gold)}
+@media(max-width:600px){.purchase-calculation{flex-direction:column;gap:6px}}
