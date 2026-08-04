@@ -419,14 +419,24 @@ async function mutate(request, env) {
       const packageQuantity = stockNumber(line.package_quantity, `a quantidade de embalagens do produto ${item.name}`, false);
       const unitsPerPackage = Number(line.units_per_package);
       if (!Number.isInteger(unitsPerPackage) || unitsPerPackage <= 0) throw new Error(`Informe as unidades por embalagem de ${item.name}.`);
-      const movementQuantity = packageQuantity * unitsPerPackage;
+      const stockUnit = item.unit || "un";
+      const bulkFardo = line.purchase_unit === "fardo" && ["kg", "g", "L", "ml"].includes(stockUnit);
+      let contentPerUnit = bulkFardo ? stockNumber(line.content_per_unit, `o conteúdo de cada unidade de ${item.name}`, false) : 1;
+      const contentUnit = String(line.content_unit || stockUnit).trim();
+      if (bulkFardo && contentUnit !== stockUnit) {
+        const converted = UNIT_FACTORS[contentUnit]?.[stockUnit];
+        if (!converted) throw new Error(`Não é possível converter ${contentUnit} para ${stockUnit} em ${item.name}.`);
+        contentPerUnit *= converted;
+      }
+      const movementQuantity = packageQuantity * unitsPerPackage * contentPerUnit;
       const hasCost = line.package_cost !== "" && line.package_cost != null;
       const packageCost = hasCost ? amount(line.package_cost, `o valor da embalagem de ${item.name}`) : 0;
-      const entryCost = hasCost ? packageCost / unitsPerPackage : null;
+      const entryCost = hasCost ? packageCost / (unitsPerPackage * contentPerUnit) : null;
       const balance = line.id ? await db.prepare("SELECT quantity FROM stock_balances WHERE id=?").bind(itemId).first() : null;
       const current = Number(balance?.quantity || 0);
       item.purchase_unit = String(line.purchase_unit || "un").trim();
       item.units_per_package = unitsPerPackage;
+      if (bulkFardo) { item.package_size = Number(line.content_per_unit); item.package_measure = contentUnit; }
       item.updated_at = now();
       if (entryCost != null) {
         item.cost_price = Math.round(((current * Number(item.cost_price || 0) + movementQuantity * entryCost) / (current + movementQuantity)) * 100) / 100;
