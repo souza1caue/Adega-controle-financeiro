@@ -795,6 +795,9 @@ async function mutate(request, env) {
   } else if (action === "cash.close") {
     const cash = await readRecord(db, "cash", id);
     if (!cash || cash.status !== "open") throw new Error("Caixa aberto não encontrado.");
+    const kitchenOpen = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='kitchen' AND COALESCE(json_extract(data,'$.status'),'pending') NOT IN ('delivered','done')").first();
+    const kitchenOpenCount = Number(kitchenOpen?.total || 0);
+    if (kitchenOpenCount) throw new Error(`Não é possível fechar o caixa: ${kitchenOpenCount} pedido${kitchenOpenCount === 1 ? "" : "s"} ainda ${kitchenOpenCount === 1 ? "está" : "estão"} em andamento na cozinha.`);
     required(input.closed_by, "o responsável pelo fechamento");
     const sales = await db.prepare("SELECT data FROM records WHERE kind='sales' AND json_extract(data,'$.cash_session_id')=?").bind(id).all();
     const parsed = sales.results.map((row) => JSON.parse(row.data)).filter((sale) => !sale.voided_at);
