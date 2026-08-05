@@ -670,7 +670,11 @@ async function mutate(request, env) {
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
     if (!open) throw new Error("Abra o caixa antes de receber um fiado.");
     required(input.payment_method, "a forma de pagamento");
-    if (!["Dinheiro", "Pix", "Cartão"].includes(input.payment_method)) throw new Error("Forma de pagamento inválida.");
+    let paymentMethod = input.payment_method;
+    if (paymentMethod === "Cartão") {
+      if (!["Débito", "Crédito"].includes(input.card_type)) throw new Error("Escolha Débito ou Crédito para o pagamento em cartão.");
+      paymentMethod = `Cartão - ${input.card_type}`;
+    } else if (!["Dinheiro", "Pix"].includes(paymentMethod)) throw new Error("Forma de pagamento inválida.");
     required(input.responsible, "o responsável pelo recebimento");
     const received = amount(input.amount, "um valor", false);
     const balance = accountBalance(account);
@@ -703,7 +707,7 @@ async function mutate(request, env) {
     }
     const paymentId = uid();
     const createdAt = now();
-    const payment = { account_id: id, customer_name: account.customer_name, amount: received, payment_method: input.payment_method, responsible: input.responsible.trim(), note: (input.note || "").trim(), settlement_type: settlementType, split_people: settlementType === "equal" ? Math.max(2, Number(input.split_people || 2)) : null, allocations, cash_session_id: open.id, created_at: createdAt };
+    const payment = { account_id: id, customer_name: account.customer_name, amount: received, payment_method: paymentMethod, card_type: input.card_type || "", responsible: input.responsible.trim(), note: (input.note || "").trim(), settlement_type: settlementType, split_people: settlementType === "equal" ? Math.max(2, Number(input.split_people || 2)) : null, allocations, cash_session_id: open.id, created_at: createdAt };
     const remainingBalance = Math.max(0, Math.round((balance - received) * 100) / 100);
     account.payments_total = Math.round((Number(account.payments_total || 0) + received) * 100) / 100;
     account.last_payment_at = createdAt;
