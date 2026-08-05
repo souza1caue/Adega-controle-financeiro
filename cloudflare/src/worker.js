@@ -420,10 +420,11 @@ async function mutate(request, env) {
       const unitsPerPackage = Number(line.units_per_package);
       if (!Number.isInteger(unitsPerPackage) || unitsPerPackage <= 0) throw new Error(`Informe as unidades por embalagem de ${item.name}.`);
       const stockUnit = item.unit || "un";
-      const bulkFardo = line.purchase_unit === "fardo" && ["kg", "g", "L", "ml"].includes(stockUnit);
-      let contentPerUnit = bulkFardo ? stockNumber(line.content_per_unit, `o conteúdo de cada unidade de ${item.name}`, false) : 1;
+      const packaged = ["package", "fardo"].includes(line.purchase_unit);
+      const bulkPackage = packaged && ["kg", "g", "L", "ml"].includes(stockUnit);
+      let contentPerUnit = bulkPackage ? stockNumber(line.content_per_unit, `o conteúdo de cada unidade de ${item.name}`, false) : 1;
       const contentUnit = String(line.content_unit || stockUnit).trim();
-      if (bulkFardo && contentUnit !== stockUnit) {
+      if (bulkPackage && contentUnit !== stockUnit) {
         const converted = UNIT_FACTORS[contentUnit]?.[stockUnit];
         if (!converted) throw new Error(`Não é possível converter ${contentUnit} para ${stockUnit} em ${item.name}.`);
         contentPerUnit *= converted;
@@ -436,7 +437,7 @@ async function mutate(request, env) {
       const current = Number(balance?.quantity || 0);
       item.purchase_unit = String(line.purchase_unit || "un").trim();
       item.units_per_package = unitsPerPackage;
-      if (bulkFardo) { item.package_size = Number(line.content_per_unit); item.package_measure = contentUnit; }
+      if (bulkPackage) { item.package_size = Number(line.content_per_unit); item.package_measure = contentUnit; }
       item.updated_at = now();
       if (entryCost != null) {
         item.cost_price = Math.round(((current * Number(item.cost_price || 0) + movementQuantity * entryCost) / (current + movementQuantity)) * 100) / 100;
