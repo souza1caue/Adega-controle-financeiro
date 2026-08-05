@@ -197,7 +197,7 @@ function draw(){
     page="printer";setupNav([]);app.innerHTML=fiadoLabels(printerPage());refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);queueAutomaticPrint();
   }else{
     if(!token){setupNav([]);app.innerHTML=loginPage();return}
-    page ||= "summary";setupNav([]);
+    page ||= "cash";setupNav([]);
     const content=page==="summary"?overviewPage():page==="menu"?menuPage():page==="stock"?intelligentStockPage():page==="cash"?cashPage():page==="accounts"?accountsPage():page==="staff"?staffPageSimple():page==="devices"?devicesPage():page==="kitchen"?kitchenPage():printerPage();
     app.innerHTML=fiadoLabels(adminShell(content));
     if(page==="summary"&&overviewPeriodOpen)app.querySelector(".overview-period-details")?.setAttribute("open","");
