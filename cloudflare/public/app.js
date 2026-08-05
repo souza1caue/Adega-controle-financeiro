@@ -29,7 +29,8 @@ let pendingPurchaseItems = [], pendingPurchaseMeta = { responsible:"", note:"" }
 let cart = (()=>{try{return JSON.parse(localStorage.getItem("saleCart")||"{}")||{}}catch{return {}}})();
 
 const esc = (v="") => systemLabel(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const systemLabel = value => String(value||"").replace(/^Cadernetas?$/i,"Ficha").replace(/^Cartão\s*-\s*(Débito|Crédito)$/i,"Cartão · $1").replace(/^Cartão$/i,"Cartão · não informado");
+const systemLabel = value => String(value||"").replace(/^(?:Cadernetas?|Fichas?)$/i,"Fiado").replace(/^Cartão\s*-\s*(Débito|Crédito)$/i,"Cartão · $1").replace(/^Cartão$/i,"Cartão · não informado");
+const fiadoLabels = value => String(value||"").replace(/Fichas pagas/g,"Fiado recebido").replace(/fichas pagas/g,"fiado recebido").replace(/Recebido de fichas/g,"Recebido do fiado").replace(/recebido de fichas/g,"recebido do fiado").replace(/Vendido em fichas/g,"Vendido no fiado").replace(/vendido em fichas/g,"vendido no fiado").replace(/Total aberto em fichas/g,"Total em fiado").replace(/total aberto em fichas/g,"total em fiado").replace(/Em fichas/g,"No fiado").replace(/em fichas/g,"no fiado").replace(/Adicionar à ficha/g,"Adicionar ao fiado").replace(/adicionar à ficha/g,"adicionar ao fiado").replace(/Criar nova ficha/g,"Criar novo fiado").replace(/criar nova ficha/g,"criar novo fiado").replace(/Nova ficha/g,"Novo fiado").replace(/nova ficha/g,"novo fiado").replace(/Resumo de fichas/g,"Resumo do fiado").replace(/resumo de fichas/g,"resumo do fiado").replace(/\bFichas\b(?!\s+técnicas)/g,"Fiado").replace(/\bfichas\b(?!\s+técnicas)/g,"fiado").replace(/\bFicha\b(?!\s+técnica)/g,"Fiado").replace(/\bficha\b(?!\s+técnica)/g,"fiado");
 const money = value => Number(value||0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
 const stockQuantity=value=>Number(value||0).toLocaleString("pt-BR",{maximumFractionDigits:3});
 const stockUnitLabel=(unit,quantity)=>{const labels={un:["unidade","unidades"],lata:["lata","latas"],"latão":["latão","latões"],garrafa:["garrafa","garrafas"],"galão":["galão","galões"],pacote:["pacote","pacotes"],caixa:["caixa","caixas"],fardo:["fardo","fardos"]},pair=labels[unit];return pair?(Number(quantity)===1?pair[0]:pair[1]):unit||"un"};
@@ -165,8 +166,8 @@ async function mutate(payload, admin=false){
   const result=await response.json();if(response.status===401&&(token||deviceToken)){token="";deviceToken="";deviceRole="";localStorage.removeItem("adminToken");sessionStorage.removeItem("adminToken");localStorage.removeItem("deviceAccessToken");localStorage.removeItem("deviceRole");module=null;page=null;draw();throw new Error("Sua autorização expirou. Entre novamente.")}if(!response.ok){if(originToken&&/acesso|caixa.*fechado|revog/i.test(result.error||"")){originToken="";localStorage.removeItem("staffAccessToken");history.replaceState({},"",location.pathname);module=null;page=null;draw()}throw new Error(result.error||"Operação não concluída.");}
   await load(false); toast("Alteração salva."); return result;
 }
-function toast(message,error=false){const box=document.querySelector("#toast");box.textContent=message;box.className=error?"show error":"show";setTimeout(()=>box.className="",2800)}
-function openModal(html){const labels=String(html).replace(/Cadernetas/g,"Fichas").replace(/cadernetas/g,"fichas").replace(/Caderneta/g,"Ficha").replace(/caderneta/g,"ficha");modalBody.innerHTML=`<div class="modal-content">${labels}</div>`;if(!modal.open)modal.showModal()}
+function toast(message,error=false){const box=document.querySelector("#toast");box.textContent=fiadoLabels(message);box.className=error?"show error":"show";setTimeout(()=>box.className="",2800)}
+function openModal(html){modalBody.innerHTML=`<div class="modal-content">${fiadoLabels(String(html).replace(/Cadernetas/g,"Fiado").replace(/cadernetas/g,"fiado").replace(/Caderneta/g,"Fiado").replace(/caderneta/g,"fiado"))}</div>`;if(!modal.open)modal.showModal()}
 function closeModal(){modal.close();modalBody.innerHTML=""}
 function heading(title,action=""){return `<div class="section-head"><div><div class="eyebrow">${esc(module||"Sistema")}</div><h1>${esc(title)}</h1></div>${action}</div>`}
 function empty(text){return `<div class="empty">${esc(text)}</div>`}
@@ -178,27 +179,27 @@ function portal(){
   if(!token){nav.innerHTML="";app.innerHTML=loginPage();return}
   nav.innerHTML="";
   app.innerHTML=`<section class="portal"><div class="eyebrow">Operação integrada</div><h1>Escolha o módulo desta máquina</h1><p class="subtitle">Cada tela acompanha os mesmos dados em tempo real.</p><div class="module-grid">
-    ${[["Frente de caixa","Vendas, ficha e acompanhamento de pedidos."],["Cozinha","Fila de preparo com atualização automática."],["Admin","Cardápio, caixa e relatórios."]].map(([name,desc])=>`<button class="module-card" data-module="${name}"><span>ACESSAR</span><b>${name}</b><span>${desc}</span></button>`).join("")}
+    ${[["Frente de caixa","Vendas, fiado e acompanhamento de pedidos."],["Cozinha","Fila de preparo com atualização automática."],["Admin","Cardápio, caixa e relatórios."]].map(([name,desc])=>`<button class="module-card" data-module="${name}"><span>ACESSAR</span><b>${name}</b><span>${desc}</span></button>`).join("")}
   </div></section>`;
 }
-function setupNav(items){nav.innerHTML=items.map(([key,label])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${label}</button>`).join("")+(deviceToken?`<button data-device-logout class="ghost">Sair</button>`:`<button data-home class="ghost">Módulos</button>`)}
+function setupNav(items){nav.innerHTML=fiadoLabels(items.map(([key,label])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${label}</button>`).join("")+(deviceToken?`<button data-device-logout class="ghost">Sair</button>`:`<button data-home class="ghost">Módulos</button>`))}
 function draw(){
   clearInterval(refreshTimer);
   app.classList.toggle("bagaco-operation",activeCash()?.[1]?.project_code==="bagaco_laranja");
   if(!module)return portal();
   if(module==="Frente de caixa"){
     page ||= "sales"; const ready=entries(data.kitchen).filter(([,o])=>(o.status||"pending")==="ready").length; setupNav([["sales","Saídas"],["accounts","Ficha"],["frontKitchen",`Pedidos${ready?` (${ready})`:""}`]]);
-    app.innerHTML=page==="sales"?salesPage():page==="accounts"?accountsPage():frontKitchenPage();
+    app.innerHTML=fiadoLabels(page==="sales"?salesPage():page==="accounts"?accountsPage():frontKitchenPage());
     refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
   }else if(module==="Cozinha"){
-    page="kitchen";setupNav([]);app.innerHTML=kitchenPage();refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
+    page="kitchen";setupNav([]);app.innerHTML=fiadoLabels(kitchenPage());refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
   }else if(module==="Impressora"){
-    page="printer";setupNav([]);app.innerHTML=printerPage();refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);queueAutomaticPrint();
+    page="printer";setupNav([]);app.innerHTML=fiadoLabels(printerPage());refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);queueAutomaticPrint();
   }else{
     if(!token){setupNav([]);app.innerHTML=loginPage();return}
     page ||= "summary";setupNav([]);
     const content=page==="summary"?overviewPage():page==="menu"?menuPage():page==="stock"?intelligentStockPage():page==="cash"?cashPage():page==="accounts"?accountsPage():page==="staff"?staffPageSimple():page==="devices"?devicesPage():page==="kitchen"?kitchenPage():printerPage();
-    app.innerHTML=adminShell(content);
+    app.innerHTML=fiadoLabels(adminShell(content));
     if(page==="summary"&&overviewPeriodOpen)app.querySelector(".overview-period-details")?.setAttribute("open","");
     if(page==="summary"||page==="stock")refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
     if(page==="kitchen")refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
@@ -592,7 +593,7 @@ document.addEventListener("submit",async event=>{
     }
     if(form.dataset.form==="checkout"){
       if(checkoutSubmitting)return;checkoutSubmitting=true;const submit=form.querySelector("button[type='submit']"),total=cartTotal(),quantity=cartQuantity(),hasFood=cartLines().some(([id])=>category(data.menu[id])==="Comidas"),paymentLabel=fd.payment_method==="Cartão"?`Cartão - ${fd.card_type}`:fd.payment_method;submit.disabled=true;submit.textContent="Finalizando...";
-      try{const result=await mutate({action:"sale.checkout",items:cartLines().map(([menu_id,line])=>({menu_id,quantity:line.quantity,note:line.note||""})),customer_name:fd.destination==="account"?fd.customer_name:fd.sale_customer_name,payment_method:fd.payment_method,card_type:fd.card_type,note:fd.note,destination:fd.destination,account_id:fd.account_id,origin_token:originToken});cart={};saveCart();draw();modalBody.innerHTML=`<div class="modal-content order-success"><span class="success-icon">✓</span><h2>Pedido confirmado</h2><b class="order-number">#${esc(result.id.slice(0,8).toUpperCase())}</b><div class="success-summary"><div><span>Itens</span><b>${quantity}</b></div><div><span>Total</span><b>${money(total)}</b></div><div><span>Destino</span><b>${fd.destination==="account"?'Ficha':esc(paymentLabel)}</b></div></div>${hasFood?`<p class="notice">Comanda enviada para a fila de impressão da cozinha.</p>`:""}<button class="primary checkout-button" data-new-order>Novo pedido</button></div>`;return}finally{checkoutSubmitting=false;if(form.isConnected){submit.disabled=false;submit.textContent=`Confirmar pedido · ${money(total)}`}}
+      try{const result=await mutate({action:"sale.checkout",items:cartLines().map(([menu_id,line])=>({menu_id,quantity:line.quantity,note:line.note||""})),customer_name:fd.destination==="account"?fd.customer_name:fd.sale_customer_name,payment_method:fd.payment_method,card_type:fd.card_type,note:fd.note,destination:fd.destination,account_id:fd.account_id,origin_token:originToken});cart={};saveCart();draw();modalBody.innerHTML=`<div class="modal-content order-success"><span class="success-icon">✓</span><h2>Pedido confirmado</h2><b class="order-number">#${esc(result.id.slice(0,8).toUpperCase())}</b><div class="success-summary"><div><span>Itens</span><b>${quantity}</b></div><div><span>Total</span><b>${money(total)}</b></div><div><span>Destino</span><b>${fd.destination==="account"?'Fiado':esc(paymentLabel)}</b></div></div>${hasFood?`<p class="notice">Comanda enviada para a fila de impressão da cozinha.</p>`:""}<button class="primary checkout-button" data-new-order>Novo pedido</button></div>`;return}finally{checkoutSubmitting=false;if(form.isConnected){submit.disabled=false;submit.textContent=`Confirmar pedido · ${money(total)}`}}
     }
     closeModal();draw();
   }catch(error){toast(error.message,true)}

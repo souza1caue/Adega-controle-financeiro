@@ -224,12 +224,12 @@ function accountBalance(account) {
 }
 
 function assertAccountCanCharge(account, charge) {
-  if (account.blocked === true) throw new Error(`A ficha de ${account.customer_name} está bloqueada para novos consumos.`);
+  if (account.blocked === true) throw new Error(`O fiado de ${account.customer_name} está bloqueado para novos consumos.`);
   const limit = Number(account.credit_limit || 0);
   const resultingBalance = Math.round((accountBalance(account) + Number(charge || 0)) * 100) / 100;
   if (limit > 0 && resultingBalance > limit + 0.001) {
     const available = Math.max(0, limit - accountBalance(account));
-    throw new Error(`Limite da ficha excedido. Disponível: R$ ${available.toFixed(2).replace(".", ",")}.`);
+    throw new Error(`Limite do fiado excedido. Disponível: R$ ${available.toFixed(2).replace(".", ",")}.`);
   }
 }
 
@@ -584,17 +584,17 @@ async function mutate(request, env) {
   } else if (action === "account.create") {
     required(input.customer_name, "o nome do cliente");
     const accountType = input.account_type === "owner" ? "owner" : "customer";
-    if (accountType === "owner" && !admin) throw new Error("Somente o proprietário pode criar uma ficha de proprietário.");
-    await putRecord(db, "accounts", id, { account_type: accountType, customer_name: input.customer_name.trim(), note: (input.note || "").trim(), credit_limit: amount(input.credit_limit || 0, "o limite da ficha"), blocked: input.blocked === true, created_at: now().slice(0, 10), items: [], payments_total: 0 }).run();
+    if (accountType === "owner" && !admin) throw new Error("Somente o proprietário pode criar um fiado de proprietário.");
+    await putRecord(db, "accounts", id, { account_type: accountType, customer_name: input.customer_name.trim(), note: (input.note || "").trim(), credit_limit: amount(input.credit_limit || 0, "o limite do fiado"), blocked: input.blocked === true, created_at: now().slice(0, 10), items: [], payments_total: 0 }).run();
   } else if (action === "account.update") {
     const account = await readRecord(db, "accounts", id);
-    if (!account) throw new Error("Ficha não encontrada.");
+    if (!account) throw new Error("Fiado não encontrado.");
     required(input.customer_name, "o nome do cliente");
     account.customer_name = input.customer_name.trim();
-    if (input.account_type === "owner" && !admin) throw new Error("Somente o proprietário pode classificar uma ficha como proprietário.");
+    if (input.account_type === "owner" && !admin) throw new Error("Somente o proprietário pode classificar um fiado como proprietário.");
     if (admin) account.account_type = input.account_type === "owner" ? "owner" : "customer";
     account.note = (input.note || "").trim();
-    account.credit_limit = amount(input.credit_limit || 0, "o limite da ficha");
+    account.credit_limit = amount(input.credit_limit || 0, "o limite do fiado");
     account.blocked = input.blocked === true;
     delete account.phone;
     delete account.due_days;
@@ -624,11 +624,11 @@ async function mutate(request, env) {
     } else if (entry.menu_id) {
       const product = await readRecord(db, "menu", entry.menu_id);
       if (product?.stock_controlled) {
-        const movement = stockMovement(db, entry.menu_id, product, "sale", entry.quantity, { reason: "Consumo na ficha", responsible: "Sistema", reference_id: orderId, legacy_menu: true });
+        const movement = stockMovement(db, entry.menu_id, product, "sale", entry.quantity, { reason: "Consumo no fiado", responsible: "Sistema", reference_id: orderId, legacy_menu: true });
         statements.push(putRecord(db, "menu", entry.menu_id, product), movement);
       }
     }
-    if (input.print_order || input.send_to_kitchen) statements.push(putRecord(db, "kitchen", uid(), { ...entry, customer_name: account.customer_name, note: (input.note || "").trim(), origin: "Ficha", status: "pending", print_status: "pending", print_count: 0 }));
+    if (input.print_order || input.send_to_kitchen) statements.push(putRecord(db, "kitchen", uid(), { ...entry, customer_name: account.customer_name, note: (input.note || "").trim(), origin: "Fiado", status: "pending", print_status: "pending", print_count: 0 }));
     await db.batch(statements);
   } else if (action === "account.cancelItem") {
     const account = await readRecord(db, "accounts", id);
@@ -668,7 +668,7 @@ async function mutate(request, env) {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Conta não encontrada.");
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
-    if (!open) throw new Error("Abra o caixa antes de receber uma ficha.");
+    if (!open) throw new Error("Abra o caixa antes de receber um fiado.");
     required(input.payment_method, "a forma de pagamento");
     if (!["Dinheiro", "Pix", "Cartão"].includes(input.payment_method)) throw new Error("Forma de pagamento inválida.");
     required(input.responsible, "o responsável pelo recebimento");
@@ -681,7 +681,7 @@ async function mutate(request, env) {
       const requested = Array.isArray(input.allocations) ? input.allocations : [];
       if (!requested.length) throw new Error("Selecione ao menos um item para receber.");
       const previousRows = await db.prepare("SELECT data FROM records WHERE kind='account_payments' AND json_extract(data,'$.account_id')=?").bind(id).all();
-      if (previousRows.results.some((row) => !JSON.parse(row.data).voided_at)) throw new Error("O pagamento por itens só está disponível antes do primeiro pagamento desta ficha.");
+      if (previousRows.results.some((row) => !JSON.parse(row.data).voided_at)) throw new Error("O pagamento por itens só está disponível antes do primeiro pagamento deste fiado.");
       const previouslyPaid = new Map();
       for (const row of previousRows.results) {
         const previous = JSON.parse(row.data);
@@ -728,7 +728,7 @@ async function mutate(request, env) {
       const accountId = input.account_id || uid();
       let account = await readRecord(db, "accounts", accountId);
       if (!account) {
-        required(customerName, "o cliente para criar a ficha");
+        required(customerName, "o cliente para criar o fiado");
         account = { account_type: "customer", customer_name: customerName, note: "", credit_limit: 0, blocked: false, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
       }
       const orderCustomerName = String(account.customer_name || customerName).trim();
@@ -738,7 +738,7 @@ async function mutate(request, env) {
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
       for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, item_category: entry.item_category, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: orderCustomerName, payment_method: "Caderneta", account_id: accountId, account_type: account.account_type || "customer", account_item_id: entry.id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
-      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: orderCustomerName, account_id: accountId, account_type: account.account_type || "customer", cash_session_id: cashSessionId, note, origin: "Ficha", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
+      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: orderCustomerName, account_id: accountId, account_type: account.account_type || "customer", cash_session_id: cashSessionId, note, origin: "Fiado", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
     } else {
       required(input.payment_method, "a forma de pagamento");
       let paymentMethod = input.payment_method;
@@ -781,14 +781,14 @@ async function mutate(request, env) {
     await db.batch(statements);
   } else if (action === "sale.delete") {
     const sale = await readRecord(db, "sales", id);
-    if (sale?.account_id) throw new Error("Consumos da ficha não podem ser apagados. Use o cancelamento com responsável e justificativa.");
+    if (sale?.account_id) throw new Error("Consumos do fiado não podem ser apagados. Use o cancelamento com responsável e justificativa.");
     await db.prepare("DELETE FROM records WHERE kind='sales' AND id=?").bind(id).run();
   } else if (action === "sale.void") {
     required(input.reason, "a justificativa do cancelamento");
     const sale = await readRecord(db, "sales", id);
     if (!sale) throw new Error("Lançamento não encontrado.");
     if (sale.voided_at) throw new Error("Este lançamento já foi cancelado.");
-    if (sale.account_id) throw new Error("Cancele este consumo diretamente na ficha para manter o saldo e o estoque consistentes.");
+    if (sale.account_id) throw new Error("Cancele este consumo diretamente no fiado para manter o saldo e o estoque consistentes.");
     sale.voided_at = now();
     sale.void_reason = input.reason.trim();
     sale.voided_by = (input.responsible || "Admin").trim();
