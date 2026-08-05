@@ -207,7 +207,7 @@ function draw(){
   }
 }
 
-function adminShell(content){const groups=[["Operação",[["summary","Visão geral"],["cash","Controle de caixa"],["stock","Estoque"]]],["Cadastros",[["menu","Cardápio"],["accounts","Ficha"],["staff","Equipe e diárias"],["devices","Dispositivos"]]]];return `<div class="admin-layout"><aside class="admin-sidebar"><div class="admin-identity"><span class="eyebrow">Administração</span><b>Controle da Adega</b></div>${groups.map(([label,items])=>`<div class="admin-nav-group"><small>${label}</small>${items.map(([key,text])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${text}</button>`).join("")}</div>`).join("")}<button class="ghost admin-logout" data-admin-logout>Sair do Admin</button></aside><section class="admin-content">${content}</section></div>`}
+function adminShell(content){const groups=[["Operação",[["cash","Controle de caixa"],["summary","Visão geral"],["stock","Estoque"]]],["Cadastros",[["menu","Cardápio"],["accounts","Ficha"],["staff","Equipe e diárias"],["devices","Dispositivos"]]]];return `<div class="admin-layout"><aside class="admin-sidebar"><div class="admin-identity"><span class="eyebrow">Administração</span><b>Controle da Adega</b></div>${groups.map(([label,items])=>`<div class="admin-nav-group"><small>${label}</small>${items.map(([key,text])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${text}</button>`).join("")}</div>`).join("")}<button class="ghost admin-logout" data-admin-logout>Sair do Admin</button></aside><section class="admin-content">${content}</section></div>`}
 
 function salesPage(){
   const open=activeCash();
