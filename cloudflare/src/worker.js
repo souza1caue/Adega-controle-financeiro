@@ -266,7 +266,7 @@ async function mutate(request, env) {
   const db = env.DB;
   const staffToken = request.headers.get("x-staff-access") || "";
   const device = await authorizedDevice(request, env);
-  const frontActions = new Set(["sale.checkout", "account.addItem", "account.create", "account.update", "account.receivePayment", "account.cancelItem", "kitchen.status"]);
+  const frontActions = new Set(["sale.checkout", "account.addItem", "account.create", "account.update", "account.receivePayment", "account.cancelItem", "table.create", "table.transfer", "kitchen.status"]);
   if (staffToken) {
     if (!frontActions.has(action)) return reply({ error: "Este QR Code permite acesso somente à Frente de Caixa." }, 403);
     await orderOrigin(db, staffToken);
@@ -580,6 +580,28 @@ async function mutate(request, env) {
     await db.batch([putRecord(db, "menu", id, item), movement]);
   } else if (action === "menu.delete") {
     await db.prepare("DELETE FROM records WHERE kind='menu' AND id=?").bind(id).run();
+  } else if (action === "table.create") {
+    const open = await db.prepare("SELECT id,data FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!open) throw new Error("Abra o caixa antes de abrir uma mesa.");
+    required(input.customer_name, "o nome ou número da mesa");
+    const table = { account_type: "table", customer_name: input.customer_name.trim(), note: (input.note || "").trim(), credit_limit: 0, cash_session_id: open.id, created_at: now(), items: [], payments_total: 0 };
+    await putRecord(db, "accounts", id, table).run();
+  } else if (action === "table.transfer") {
+    const table = await readRecord(db, "accounts", id);
+    if (!table || table.account_type !== "table") throw new Error("Mesa não encontrada.");
+    const target = await readRecord(db, "accounts", input.account_id);
+    if (!target || target.account_type === "table") throw new Error("Escolha um fiado válido.");
+    const transferAmount = amount(input.amount, "o valor da transferência", false);
+    const balance = accountBalance(table);
+    if (transferAmount > balance + 0.001) throw new Error("O valor da transferência é maior que o saldo da mesa.");
+    assertAccountCanCharge(target, transferAmount);
+    const createdAt = now();
+    target.items = [...(target.items || []), { id: uid(), description: `Transferência da ${table.customer_name}`, quantity: 1, price: transferAmount, note: (input.note || "").trim(), created_at: createdAt, order_id: uid(), cash_session_id: table.cash_session_id, created_by: input.responsible?.trim() || "Frente de caixa", transferred_from_table_id: id }];
+    delete target.closed_at;
+    table.payments_total = Math.round((Number(table.payments_total || 0) + transferAmount) * 100) / 100;
+    table.transfers = [...(table.transfers || []), { account_id: input.account_id, customer_name: target.customer_name, amount: transferAmount, responsible: (input.responsible || "").trim(), note: (input.note || "").trim(), created_at: createdAt }];
+    if (accountBalance(table) <= 0.001) table.closed_at = createdAt;
+    await db.batch([putRecord(db, "accounts", id, table), putRecord(db, "accounts", input.account_id, target)]);
   } else if (action === "account.create") {
     required(input.customer_name, "o nome do cliente");
     const accountType = input.account_type === "owner" ? "owner" : "customer";
@@ -727,21 +749,25 @@ async function mutate(request, env) {
     const shouldPrint = foodItems.length > 0;
     const orderId = id;
 
-    if (input.destination === "account" || input.to_account === true) {
-      const accountId = input.account_id || uid();
+    if (["account", "table"].includes(input.destination) || input.to_account === true) {
+      const isTable = input.destination === "table";
+      const accountId = isTable ? input.table_id : input.account_id || uid();
       let account = await readRecord(db, "accounts", accountId);
       if (!account) {
+        if (isTable) throw new Error("Escolha uma mesa aberta.");
         required(customerName, "o cliente para criar o fiado");
         account = { account_type: "customer", customer_name: customerName, note: "", credit_limit: 0, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
       }
+      if (isTable && (account.account_type !== "table" || account.closed_at || account.cash_session_id !== cashSessionId)) throw new Error("Esta mesa não está aberta no caixa atual.");
       const orderCustomerName = String(account.customer_name || customerName).trim();
       required(orderCustomerName, "o nome do cliente da comanda");
       assertAccountCanCharge(account, items.reduce((sum, item) => sum + Number(item.quantity) * Number(item.price), 0));
       const accountEntries = items.map((item) => ({ id: uid(), menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId, cash_session_id: cashSessionId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
       account.items = [...(account.items || []), ...accountEntries];
+      delete account.closed_at;
       statements.push(putRecord(db, "accounts", accountId, account));
-      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, item_category: entry.item_category, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: orderCustomerName, payment_method: "Caderneta", account_id: accountId, account_type: account.account_type || "customer", account_item_id: entry.id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
-      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: orderCustomerName, account_id: accountId, account_type: account.account_type || "customer", cash_session_id: cashSessionId, note, origin: "Fiado", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
+      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, item_category: entry.item_category, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: orderCustomerName, payment_method: isTable ? "Mesa" : "Caderneta", account_id: accountId, account_type: account.account_type || "customer", account_item_id: entry.id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
+      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: orderCustomerName, account_id: accountId, account_type: account.account_type || "customer", cash_session_id: cashSessionId, note, origin: isTable ? "Mesa" : "Fiado", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
     } else {
       required(input.payment_method, "a forma de pagamento");
       let paymentMethod = input.payment_method;
@@ -866,6 +892,9 @@ async function mutate(request, env) {
     const staffPending = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='staff_shifts' AND json_extract(data,'$.cash_session_id')=? AND COALESCE(json_extract(data,'$.status'),'confirmed') NOT IN ('paid','cancelled')").bind(id).first();
     const staffPendingCount = Number(staffPending?.total || 0);
     if (staffPendingCount) throw new Error(`Não é possível fechar o caixa: ${staffPendingCount} pagamento${staffPendingCount === 1 ? "" : "s"} da equipe ainda ${staffPendingCount === 1 ? "está" : "estão"} pendente${staffPendingCount === 1 ? "" : "s"}. Pague ou cancele ${staffPendingCount === 1 ? "a diária" : "as diárias"} antes de continuar.`);
+    const tableRows = await db.prepare("SELECT data FROM records WHERE kind='accounts' AND json_extract(data,'$.account_type')='table' AND json_extract(data,'$.cash_session_id')=? AND json_extract(data,'$.closed_at') IS NULL").bind(id).all();
+    const openTables = tableRows.results.map(row => JSON.parse(row.data)).filter(table => accountBalance(table) > 0.001);
+    if (openTables.length) throw new Error(`Não é possível fechar o caixa: ${openTables.length} mesa${openTables.length === 1 ? "" : "s"} ainda ${openTables.length === 1 ? "está" : "estão"} aberta${openTables.length === 1 ? "" : "s"}. Receba ou transfira o saldo para o fiado.`);
     required(input.closed_by, "o responsável pelo fechamento");
     const sales = await db.prepare("SELECT data FROM records WHERE kind='sales' AND json_extract(data,'$.cash_session_id')=?").bind(id).all();
     const parsed = sales.results.map((row) => JSON.parse(row.data)).filter((sale) => !sale.voided_at);
