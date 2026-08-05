@@ -224,7 +224,6 @@ function accountBalance(account) {
 }
 
 function assertAccountCanCharge(account, charge) {
-  if (account.blocked === true) throw new Error(`O fiado de ${account.customer_name} está bloqueado para novos consumos.`);
   const limit = Number(account.credit_limit || 0);
   const resultingBalance = Math.round((accountBalance(account) + Number(charge || 0)) * 100) / 100;
   if (limit > 0 && resultingBalance > limit + 0.001) {
@@ -585,7 +584,7 @@ async function mutate(request, env) {
     required(input.customer_name, "o nome do cliente");
     const accountType = input.account_type === "owner" ? "owner" : "customer";
     if (accountType === "owner" && !admin) throw new Error("Somente o proprietário pode criar um fiado de proprietário.");
-    await putRecord(db, "accounts", id, { account_type: accountType, customer_name: input.customer_name.trim(), note: (input.note || "").trim(), credit_limit: amount(input.credit_limit || 0, "o limite do fiado"), blocked: input.blocked === true, created_at: now().slice(0, 10), items: [], payments_total: 0 }).run();
+    await putRecord(db, "accounts", id, { account_type: accountType, customer_name: input.customer_name.trim(), note: (input.note || "").trim(), credit_limit: amount(input.credit_limit || 0, "o limite do fiado"), created_at: now().slice(0, 10), items: [], payments_total: 0 }).run();
   } else if (action === "account.update") {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Fiado não encontrado.");
@@ -595,7 +594,7 @@ async function mutate(request, env) {
     if (admin) account.account_type = input.account_type === "owner" ? "owner" : "customer";
     account.note = (input.note || "").trim();
     account.credit_limit = amount(input.credit_limit || 0, "o limite do fiado");
-    account.blocked = input.blocked === true;
+    delete account.blocked;
     delete account.phone;
     delete account.due_days;
     account.updated_at = now();
@@ -733,7 +732,7 @@ async function mutate(request, env) {
       let account = await readRecord(db, "accounts", accountId);
       if (!account) {
         required(customerName, "o cliente para criar o fiado");
-        account = { account_type: "customer", customer_name: customerName, note: "", credit_limit: 0, blocked: false, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
+        account = { account_type: "customer", customer_name: customerName, note: "", credit_limit: 0, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
       }
       const orderCustomerName = String(account.customer_name || customerName).trim();
       required(orderCustomerName, "o nome do cliente da comanda");
