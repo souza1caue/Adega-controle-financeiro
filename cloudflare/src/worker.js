@@ -238,7 +238,7 @@ function atomicStockChange(db, stockItemId, product, type, quantityValue, detail
 }
 
 function accountBalance(account) {
-  const charges = (account.items || []).filter((item) => !item.cancelled_at)
+  const charges = Number(account.opening_balance || 0) + (account.items || []).filter((item) => !item.cancelled_at)
     .reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.price || 0), 0);
   return Math.max(0, Math.round((charges - Number(account.payments_total || 0)) * 100) / 100);
 }
@@ -604,7 +604,7 @@ async function mutate(request, env) {
     required(input.customer_name, "o nome do cliente");
     const accountType = input.account_type === "owner" ? "owner" : "customer";
     if (accountType === "owner" && !admin) throw new Error("Somente o proprietário pode criar um fiado de proprietário.");
-    await putRecord(db, "accounts", id, { account_type: accountType, customer_name: input.customer_name.trim(), note: (input.note || "").trim(), credit_limit: amount(input.credit_limit || 0, "o limite do fiado"), created_at: now().slice(0, 10), items: [], payments_total: 0 }).run();
+    await putRecord(db, "accounts", id, { account_type: accountType, customer_name: input.customer_name.trim(), note: (input.note || "").trim(), credit_limit: amount(input.credit_limit || 0, "o limite do fiado"), opening_balance: amount(input.opening_balance || 0, "o saldo inicial"), opening_balance_at: now(), items: [], payments_total: 0 }).run();
   } else if (action === "account.update") {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Fiado não encontrado.");
@@ -752,7 +752,7 @@ async function mutate(request, env) {
       let account = await readRecord(db, "accounts", accountId);
       if (!account) {
         required(customerName, "o cliente para criar o fiado");
-        account = { account_type: "customer", customer_name: customerName, note: "", credit_limit: 0, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
+        account = { account_type: "customer", customer_name: customerName, note: "", credit_limit: 0, opening_balance: 0, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
       }
       const orderCustomerName = String(account.customer_name || customerName).trim();
       required(orderCustomerName, "o nome do cliente da comanda");
