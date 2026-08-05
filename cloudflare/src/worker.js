@@ -386,7 +386,7 @@ async function mutate(request, env) {
     required(input.name, "o nome do insumo");
     const packageSize = input.package_size === "" || input.package_size == null ? null : stockNumber(input.package_size, "o conteúdo da embalagem", false);
     const portionSize = input.portion_size === "" || input.portion_size == null ? null : stockNumber(input.portion_size, "o porcionamento", false);
-    const item = { ...(await readRecord(db, "stock_items", id) || {}), name: input.name.trim(), unit: (input.unit || "un").trim(), package_size: packageSize, package_measure: packageSize == null ? "" : (input.package_measure || "ml").trim(), portion_size: portionSize, portion_measure: portionSize == null ? "" : (input.portion_measure || input.package_measure || "ml").trim(), stock_minimum: stockNumber(input.stock_minimum || 0, "o estoque mínimo"), cost_price: amount(input.cost_price || 0, "o custo"), sku: (input.sku || "").trim(), barcode: (input.barcode || "").trim(), supplier: (input.supplier || "").trim(), updated_at: now() };
+    const item = { ...(await readRecord(db, "stock_items", id) || {}), name: input.name.trim(), stock_category: ["Comida", "Bebida"].includes(input.stock_category) ? input.stock_category : "Bebida", unit: (input.unit || "un").trim(), package_size: packageSize, package_measure: packageSize == null ? "" : (input.package_measure || "ml").trim(), portion_size: portionSize, portion_measure: portionSize == null ? "" : (input.portion_measure || input.package_measure || "ml").trim(), stock_minimum: stockNumber(input.stock_minimum || 0, "o estoque mínimo"), cost_price: amount(input.cost_price || 0, "o custo"), sku: (input.sku || "").trim(), barcode: (input.barcode || "").trim(), supplier: (input.supplier || "").trim(), updated_at: now() };
     if (input.purchase_unit) item.purchase_unit = String(input.purchase_unit).trim();
     if (input.units_per_package != null && input.units_per_package !== "") { const units = Number(input.units_per_package); if (!Number.isInteger(units) || units <= 0) throw new Error("As unidades por embalagem devem ser um número inteiro maior que zero."); item.units_per_package = units; }
     if (item.stock_quantity == null) item.stock_quantity = 0;
@@ -413,7 +413,7 @@ async function mutate(request, env) {
       if (line.id && !item) throw new Error(`Produto ${index + 1} não encontrado.`);
       if (!item) {
         required(line.name, `o nome do produto ${index + 1}`);
-        item = { name: line.name.trim(), unit: (line.unit || "un").trim(), package_size: null, package_measure: "", portion_size: null, portion_measure: "", stock_minimum: 0, cost_price: 0, sku: "", barcode: "", supplier: "", stock_quantity: 0, created_at: now() };
+        item = { name: line.name.trim(), stock_category: ["Comida", "Bebida"].includes(line.stock_category) ? line.stock_category : "Bebida", unit: (line.unit || "un").trim(), package_size: null, package_measure: "", portion_size: null, portion_measure: "", stock_minimum: 0, cost_price: 0, sku: "", barcode: "", supplier: "", stock_quantity: 0, created_at: now() };
         created += 1;
       }
       const packageQuantity = stockNumber(line.package_quantity, `a quantidade de embalagens do produto ${item.name}`, false);
