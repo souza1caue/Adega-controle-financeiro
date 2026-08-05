@@ -1,4 +1,4 @@
-// Interface version: stock-category-filter
+// Interface version: restored-before-operations-package
 const app = document.querySelector("#app");
 const nav = document.querySelector("#nav");
 const modal = document.querySelector("#modal");
