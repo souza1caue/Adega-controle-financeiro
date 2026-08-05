@@ -243,15 +243,6 @@ function accountBalance(account) {
   return Math.max(0, Math.round((charges - Number(account.payments_total || 0)) * 100) / 100);
 }
 
-function assertAccountCanCharge(account, charge) {
-  const limit = Number(account.credit_limit || 0);
-  const resultingBalance = Math.round((accountBalance(account) + Number(charge || 0)) * 100) / 100;
-  if (limit > 0 && resultingBalance > limit + 0.001) {
-    const available = Math.max(0, limit - accountBalance(account));
-    throw new Error(`Limite do fiado excedido. Disponível: R$ ${available.toFixed(2).replace(".", ",")}.`);
-  }
-}
-
 function isFood(item) {
   return item.category === "Comidas" || /por[cç][aã]o|batata|carne|frango|lanche|comida/i.test(item.name || "");
 }
@@ -604,7 +595,7 @@ async function mutate(request, env) {
     required(input.customer_name, "o nome do cliente");
     const accountType = input.account_type === "owner" ? "owner" : "customer";
     if (accountType === "owner" && !admin) throw new Error("Somente o proprietário pode criar um fiado de proprietário.");
-    await putRecord(db, "accounts", id, { account_type: accountType, customer_name: input.customer_name.trim(), note: (input.note || "").trim(), credit_limit: amount(input.credit_limit || 0, "o limite do fiado"), opening_balance: amount(input.opening_balance || 0, "o saldo inicial"), opening_balance_at: now(), items: [], payments_total: 0 }).run();
+    await putRecord(db, "accounts", id, { account_type: accountType, customer_name: input.customer_name.trim(), note: (input.note || "").trim(), opening_balance: amount(input.opening_balance || 0, "o saldo inicial"), opening_balance_at: now(), items: [], payments_total: 0 }).run();
   } else if (action === "account.update") {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Fiado não encontrado.");
@@ -613,7 +604,7 @@ async function mutate(request, env) {
     if (input.account_type === "owner" && !admin) throw new Error("Somente o proprietário pode classificar um fiado como proprietário.");
     if (admin) account.account_type = input.account_type === "owner" ? "owner" : "customer";
     account.note = (input.note || "").trim();
-    account.credit_limit = amount(input.credit_limit || 0, "o limite do fiado");
+    delete account.credit_limit;
     delete account.blocked;
     delete account.phone;
     delete account.due_days;
@@ -627,7 +618,6 @@ async function mutate(request, env) {
     const orderId = uid();
     const origin = await orderOrigin(db, input.origin_token);
     const entry = { id: uid(), menu_id: input.menu_id || "", description: input.description.trim(), quantity: quantity(input.quantity), price: amount(input.price, "o preço"), note: (input.note || "").trim(), created_at: createdAt, order_id: orderId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "", stock_usage: [] };
-    assertAccountCanCharge(account, Number(entry.quantity) * Number(entry.price));
     if (entry.menu_id) entry.stock_usage = await recipeUsage(db, entry.menu_id, entry.quantity);
     account.items = [...(account.items || []), entry];
     const statements = [
@@ -752,11 +742,10 @@ async function mutate(request, env) {
       let account = await readRecord(db, "accounts", accountId);
       if (!account) {
         required(customerName, "o cliente para criar o fiado");
-        account = { account_type: "customer", customer_name: customerName, note: "", credit_limit: 0, opening_balance: 0, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
+        account = { account_type: "customer", customer_name: customerName, note: "", opening_balance: 0, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
       }
       const orderCustomerName = String(account.customer_name || customerName).trim();
       required(orderCustomerName, "o nome do cliente da comanda");
-      assertAccountCanCharge(account, items.reduce((sum, item) => sum + Number(item.quantity) * Number(item.price), 0));
       const accountEntries = items.map((item) => ({ id: uid(), menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId, cash_session_id: cashSessionId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
