@@ -858,8 +858,10 @@ async function mutate(request, env) {
     required(input.closed_by, "o responsável pelo fechamento");
     const sales = await db.prepare("SELECT data FROM records WHERE kind='sales' AND json_extract(data,'$.cash_session_id')=?").bind(id).all();
     const parsed = sales.results.map((row) => JSON.parse(row.data)).filter((sale) => !sale.voided_at);
+    const directSales = parsed.filter((sale) => !sale.account_id && sale.payment_method !== "Caderneta");
+    const accountSales = parsed.filter((sale) => sale.account_id || sale.payment_method === "Caderneta");
     const paymentTotals = {};
-    for (const sale of parsed) paymentTotals[sale.payment_method || "Não informado"] = (paymentTotals[sale.payment_method || "Não informado"] || 0) + Number(sale.quantity || 0) * Number(sale.price || 0);
+    for (const sale of directSales) paymentTotals[sale.payment_method || "Não informado"] = (paymentTotals[sale.payment_method || "Não informado"] || 0) + Number(sale.quantity || 0) * Number(sale.price || 0);
     const receiptRows = await db.prepare("SELECT data FROM records WHERE kind='account_payments' AND json_extract(data,'$.cash_session_id')=?").bind(id).all();
     const receipts = receiptRows.results.map((row) => JSON.parse(row.data)).filter((payment) => !payment.voided_at);
     for (const payment of receipts) paymentTotals[payment.payment_method] = (paymentTotals[payment.payment_method] || 0) + Number(payment.amount || 0);
@@ -868,8 +870,11 @@ async function mutate(request, env) {
     const expectedCash = Number(cash.opening_amount || 0) + Number(paymentTotals.Dinheiro || 0) + supplies - withdrawals;
     const countedCash = amount(input.counted_cash, "o dinheiro contado");
     cash.status = "closed"; cash.closed_at = now(); cash.closed_by = input.closed_by.trim(); cash.closing_note = (input.note || "").trim(); cash.sales_count = new Set(parsed.map((sale) => sale.order_id || sale.created_at)).size; cash.account_payments_count = receipts.length;
+    const directSalesTotal = directSales.reduce((sum, sale) => sum + Number(sale.quantity || 0) * Number(sale.price || 0), 0);
+    const accountChargesTotal = accountSales.reduce((sum, sale) => sum + Number(sale.quantity || 0) * Number(sale.price || 0), 0);
+    const accountReceiptsTotal = receipts.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
     cash.quantity = parsed.reduce((sum, sale) => sum + Number(sale.quantity || 0), 0);
-    cash.total = parsed.reduce((sum, sale) => sum + Number(sale.quantity || 0) * Number(sale.price || 0), 0) + receipts.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+    cash.total = directSalesTotal + accountReceiptsTotal; cash.direct_sales_total = directSalesTotal; cash.account_charges_total = accountChargesTotal; cash.account_receipts_total = accountReceiptsTotal; cash.gross_sales_total = directSalesTotal + accountChargesTotal;
     cash.payment_totals = paymentTotals; cash.supplies_total = supplies; cash.withdrawals_total = withdrawals; cash.expected_cash = expectedCash; cash.counted_cash = countedCash; cash.difference = countedCash - expectedCash;
     const grouped = new Map();
     for (const sale of parsed) {
