@@ -147,7 +147,10 @@ async function load(render=true){
     originToken="";localStorage.removeItem("staffAccessToken");history.replaceState({},"",location.pathname);module=null;page=null;
     if(render)toast("O caixa foi fechado. O acesso deste aparelho foi encerrado.",true);
   }
-  if(render) draw();
+  if(render){
+    const choosingOverviewDate=page==="summary"&&document.activeElement?.matches?.(".overview-custom-range input[type='date']");
+    if(!choosingOverviewDate)draw();
+  }
 }
 async function claimInvite(){
   if(!inviteToken)return;
