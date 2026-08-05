@@ -864,6 +864,9 @@ async function mutate(request, env) {
     const kitchenOpen = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='kitchen' AND COALESCE(json_extract(data,'$.status'),'pending') NOT IN ('delivered','done')").first();
     const kitchenOpenCount = Number(kitchenOpen?.total || 0);
     if (kitchenOpenCount) throw new Error(`Não é possível fechar o caixa: ${kitchenOpenCount} pedido${kitchenOpenCount === 1 ? "" : "s"} ainda ${kitchenOpenCount === 1 ? "está" : "estão"} em andamento na cozinha.`);
+    const staffPending = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='staff_shifts' AND json_extract(data,'$.cash_session_id')=? AND COALESCE(json_extract(data,'$.status'),'confirmed') NOT IN ('paid','cancelled')").bind(id).first();
+    const staffPendingCount = Number(staffPending?.total || 0);
+    if (staffPendingCount) throw new Error(`Não é possível fechar o caixa: ${staffPendingCount} pagamento${staffPendingCount === 1 ? "" : "s"} da equipe ainda ${staffPendingCount === 1 ? "está" : "estão"} pendente${staffPendingCount === 1 ? "" : "s"}. Pague ou cancele ${staffPendingCount === 1 ? "a diária" : "as diárias"} antes de continuar.`);
     required(input.closed_by, "o responsável pelo fechamento");
     const sales = await db.prepare("SELECT data FROM records WHERE kind='sales' AND json_extract(data,'$.cash_session_id')=?").bind(id).all();
     const parsed = sales.results.map((row) => JSON.parse(row.data)).filter((sale) => !sale.voided_at);
