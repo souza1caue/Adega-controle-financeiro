@@ -430,8 +430,8 @@ async function mutate(request, env) {
       }
       const movementQuantity = packageQuantity * unitsPerPackage * contentPerUnit;
       const hasCost = line.package_cost !== "" && line.package_cost != null;
-      const packageCost = hasCost ? amount(line.package_cost, `o valor da embalagem de ${item.name}`) : 0;
-      const entryCost = hasCost ? packageCost / (unitsPerPackage * contentPerUnit) : null;
+      const purchaseTotal = hasCost ? amount(line.package_cost, `o valor total pago por ${item.name}`) : 0;
+      const entryCost = hasCost ? purchaseTotal / movementQuantity : null;
       const balance = line.id ? await db.prepare("SELECT quantity FROM stock_balances WHERE id=?").bind(itemId).first() : null;
       const current = Number(balance?.quantity || 0);
       item.purchase_unit = String(line.purchase_unit || "un").trim();
@@ -446,7 +446,7 @@ async function mutate(request, env) {
       if (!line.id) statements.push(db.prepare("INSERT INTO stock_balances(id,quantity) VALUES(?,0)").bind(itemId));
       statements.push(...atomicStockChange(db, itemId, item, "in", movementQuantity, { unit_cost: entryCost ?? item.cost_price, responsible: input.responsible, reason: (input.note || "Compra em lote").trim(), reference_id: purchaseId }));
       totalUnits += movementQuantity;
-      totalCost += packageQuantity * packageCost;
+      totalCost += purchaseTotal;
     }
     statements.push(putRecord(db, "stock_purchases", purchaseId, { responsible: input.responsible.trim(), note: (input.note || "").trim(), items_count: lines.length, total_units: totalUnits, total_cost: Math.round(totalCost * 100) / 100, created_at: now() }));
     await db.batch(statements);
