@@ -183,6 +183,26 @@ async function orderOrigin(db, token) {
   return { source_type: "staff", source_name: access.employee_name, source_shift_id: access.shift_id, cash_session_id: access.cash_session_id };
 }
 
+async function voidSaleStatements(db, id, sale, responsible, reason) {
+  sale.voided_at = now(); sale.void_reason = reason; sale.voided_by = responsible;
+  const statements = [];
+  if (Array.isArray(sale.stock_usage) && sale.stock_usage.length && !sale.stock_restored_at) {
+    for (const usage of sale.stock_usage) {
+      const stockItem = await readRecord(db, "stock_items", usage.stock_item_id);
+      if (stockItem) statements.push(...atomicStockChange(db, usage.stock_item_id, stockItem, "return", usage.quantity, { reason: `Cancelamento de pedido: ${reason}`, responsible, reference_id: sale.order_id || id }));
+    }
+    sale.stock_restored_at = now();
+  } else if (sale.menu_id && !sale.stock_restored_at) {
+    const product = await readRecord(db, "menu", sale.menu_id);
+    if (product?.stock_controlled) {
+      statements.push(putRecord(db, "menu", sale.menu_id, product), stockMovement(db, sale.menu_id, product, "return", sale.quantity, { reason: `Cancelamento de pedido: ${reason}`, responsible, reference_id: sale.order_id || id, legacy_menu: true }));
+      sale.stock_restored_at = now();
+    }
+  }
+  statements.unshift(putRecord(db, "sales", id, sale));
+  return statements;
+}
+
 function stockMovement(db, menuId, product, type, quantityValue, details = {}) {
   const movementQuantity = stockNumber(quantityValue, "a quantidade da movimentação", false);
   const before = Number(product.stock_quantity || 0);
@@ -266,7 +286,7 @@ async function mutate(request, env) {
   const db = env.DB;
   const staffToken = request.headers.get("x-staff-access") || "";
   const device = await authorizedDevice(request, env);
-  const frontActions = new Set(["sale.checkout", "account.addItem", "account.create", "account.update", "account.receivePayment", "account.cancelItem", "kitchen.status"]);
+  const frontActions = new Set(["sale.checkout", "sale.order.void", "account.addItem", "account.create", "account.update", "account.receivePayment", "account.cancelItem", "kitchen.status"]);
   if (staffToken) {
     if (!frontActions.has(action)) return reply({ error: "Este QR Code permite acesso somente à Frente de Caixa." }, 403);
     await orderOrigin(db, staffToken);
@@ -782,6 +802,18 @@ async function mutate(request, env) {
       statements.push(putRecord(db, "kitchen", uid(), { ...sale, origin: "Venda", status: "pending", print_status: "pending", print_count: 0 }));
     }
     await db.batch(statements);
+  } else if (action === "sale.order.void") {
+    required(input.reason, "a justificativa do cancelamento");
+    required(input.responsible, "o responsável pelo cancelamento");
+    const rows = await db.prepare("SELECT id,data FROM records WHERE kind='sales' AND json_extract(data,'$.order_id')=?").bind(input.order_id).all();
+    const sales = rows.results.map(row => [row.id, JSON.parse(row.data)]).filter(([,sale])=>!sale.voided_at);
+    if (!sales.length) throw new Error("Pedido não encontrado ou já cancelado.");
+    if (sales.some(([,sale])=>sale.account_id)) throw new Error("Pedidos do fiado devem ser corrigidos dentro da própria ficha.");
+    const responsible = input.responsible.trim(), reason = input.reason.trim(), statements = [];
+    for (const [saleId,sale] of sales) statements.push(...await voidSaleStatements(db, saleId, sale, responsible, reason));
+    const kitchen = await readRecord(db, "kitchen", input.order_id);
+    if (kitchen && !["delivered","done"].includes(kitchen.status)) { kitchen.status="cancelled"; kitchen.cancelled_at=now(); kitchen.cancelled_by=responsible; kitchen.cancel_reason=reason; statements.push(putRecord(db,"kitchen",input.order_id,kitchen)); }
+    await db.batch(statements);
   } else if (action === "sale.delete") {
     const sale = await readRecord(db, "sales", id);
     if (sale?.account_id) throw new Error("Consumos do fiado não podem ser apagados. Use o cancelamento com responsável e justificativa.");
@@ -860,7 +892,7 @@ async function mutate(request, env) {
   } else if (action === "cash.close") {
     const cash = await readRecord(db, "cash", id);
     if (!cash || cash.status !== "open") throw new Error("Caixa aberto não encontrado.");
-    const kitchenOpen = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='kitchen' AND COALESCE(json_extract(data,'$.status'),'pending') NOT IN ('delivered','done')").first();
+    const kitchenOpen = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='kitchen' AND COALESCE(json_extract(data,'$.status'),'pending') NOT IN ('delivered','done','cancelled')").first();
     const kitchenOpenCount = Number(kitchenOpen?.total || 0);
     if (kitchenOpenCount) throw new Error(`Não é possível fechar o caixa: ${kitchenOpenCount} pedido${kitchenOpenCount === 1 ? "" : "s"} ainda ${kitchenOpenCount === 1 ? "está" : "estão"} em andamento na cozinha.`);
     const staffPending = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='staff_shifts' AND json_extract(data,'$.cash_session_id')=? AND COALESCE(json_extract(data,'$.status'),'confirmed') NOT IN ('paid','cancelled')").bind(id).first();
