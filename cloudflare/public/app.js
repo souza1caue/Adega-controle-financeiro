@@ -1,3 +1,4 @@
+// Interface version: stock-category-filter
 const app = document.querySelector("#app");
 const nav = document.querySelector("#nav");
 const modal = document.querySelector("#modal");
