@@ -1,5 +1,5 @@
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
-const KINDS = ["menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_movements", "stock_items", "recipes", "inventories", "employees", "staff_shifts", "device_access"];
+const KINDS = ["menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_movements", "stock_items", "recipes", "inventories", "employees", "staff_shifts", "device_access", "stock_events", "hosted_events"];
 
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 const now = () => new Date().toISOString();
@@ -206,7 +206,7 @@ async function voidSaleStatements(db, id, sale, responsible, reason) {
 function stockMovement(db, menuId, product, type, quantityValue, details = {}) {
   const movementQuantity = stockNumber(quantityValue, "a quantidade da movimentação", false);
   const before = Number(product.stock_quantity || 0);
-  const signed = ["sale", "loss", "out"].includes(type) ? -movementQuantity : movementQuantity;
+  const signed = ["sale", "loss", "out", "courtesy"].includes(type) ? -movementQuantity : movementQuantity;
   const after = Math.round((before + signed) * 1000) / 1000;
   if (after < 0) throw new Error(`Estoque insuficiente para ${product.name}. Disponível: ${before}.`);
   product.stock_quantity = after;
@@ -222,7 +222,7 @@ function stockMovement(db, menuId, product, type, quantityValue, details = {}) {
 
 function atomicStockChange(db, stockItemId, product, type, quantityValue, details = {}) {
   const movementQuantity = stockNumber(quantityValue, "a quantidade da movimentação", false);
-  const signed = ["sale", "loss", "out"].includes(type) ? -movementQuantity : movementQuantity;
+  const signed = ["sale", "loss", "out", "courtesy"].includes(type) ? -movementQuantity : movementQuantity;
   const movementId = uid();
   const update = db.prepare("UPDATE stock_balances SET quantity=quantity+?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(signed, stockItemId);
   const movement = db.prepare(`INSERT INTO records(kind,id,data,updated_at)
@@ -272,12 +272,12 @@ async function cartItems(db, inputItems) {
 async function mutate(request, env) {
   const input = await request.json();
   const action = input.action;
-  const adminActions = new Set(["menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "stock.purchase.batch", "stock.invoice.import", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "event.save", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
+  const adminActions = new Set(["menu.save", "menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "stock.purchase.batch", "stock.invoice.import", "stock.event.cancel", "hosted.event.save", "hosted.event.close", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "event.save", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
   const admin = await isAdmin(request, env);
   const db = env.DB;
   const staffToken = request.headers.get("x-staff-access") || "";
   const device = await authorizedDevice(request, env);
-  const frontActions = new Set(["sale.checkout", "sale.order.void", "account.addItem", "account.create", "account.update", "account.receivePayment", "account.cancelItem", "kitchen.status"]);
+  const frontActions = new Set(["sale.checkout", "sale.order.void", "stock.event.create", "account.addItem", "account.create", "account.update", "account.receivePayment", "account.cancelItem", "kitchen.status"]);
   if (staffToken) {
     if (!frontActions.has(action)) return reply({ error: "Este QR Code permite acesso somente à Frente de Caixa." }, 403);
     await orderOrigin(db, staffToken);
@@ -301,6 +301,29 @@ async function mutate(request, env) {
     if (!access) throw new Error("Dispositivo não encontrado.");
     access.revoked_at = now();
     await putRecord(db, "device_access", id, access).run();
+  } else if (action === "menu.save") {
+    required(input.name, "o nome do item");
+    const price = Number(input.price);
+    if (!Number.isFinite(price) || price < 0) throw new Error("Informe um preço válido.");
+    const existing = input.id ? await readRecord(db, "menu", id) : null;
+    if (input.id && !existing) throw new Error("Produto do cardápio não encontrado.");
+    const item = { ...(existing || {}), name: input.name.trim(), price, category: input.category === "Comidas" ? "Comidas" : "Bebidas" };
+    item[existing ? "updated_at" : "created_at"] = now();
+    const components = Array.isArray(input.components) ? input.components : [];
+    const componentTotals = new Map();
+    for (const component of components) {
+      const stockItem = await readRecord(db, "stock_items", component.stock_item_id);
+      if (!stockItem) throw new Error("Um dos insumos selecionados não existe.");
+      const stockUnit = stockItem.unit || "un", inputUnit = component.unit || stockUnit;
+      const normalizedQuantity = recipeQuantity(component.quantity, inputUnit, stockUnit, stockItem);
+      const current = componentTotals.get(component.stock_item_id);
+      componentTotals.set(component.stock_item_id, current ? { quantity: current.quantity + normalizedQuantity, input_quantity: current.quantity + normalizedQuantity, input_unit: stockUnit } : { quantity: normalizedQuantity, input_quantity: Number(component.quantity), input_unit: inputUnit });
+    }
+    const normalized = [...componentTotals].map(([stock_item_id, component]) => ({ stock_item_id, quantity: Math.round(component.quantity * 10000) / 10000, input_quantity: component.input_quantity, input_unit: component.input_unit }));
+    const statements = [putRecord(db, "menu", id, item)];
+    if (normalized.length) statements.push(putRecord(db, "recipes", id, { menu_id: id, product_name: item.name, components: normalized, updated_at: now() }));
+    else statements.push(db.prepare("DELETE FROM records WHERE kind='recipes' AND id=?").bind(id));
+    await db.batch(statements);
   } else if (action === "menu.create" || action === "menu.update") {
     required(input.name, "o nome do item");
     const item = { ...(action === "menu.update" ? await readRecord(db, "menu", id) : {}), name: input.name.trim(), price: Number(input.price), category: input.category === "Comidas" ? "Comidas" : "Bebidas" };
@@ -423,7 +446,7 @@ async function mutate(request, env) {
       if (line.id && !item) throw new Error(`Produto ${index + 1} não encontrado.`);
       if (!item) {
         required(line.name, `o nome do produto ${index + 1}`);
-        item = { name: line.name.trim(), stock_category: ["Comida", "Bebida", "Descartável"].includes(line.stock_category) ? line.stock_category : "Bebida", unit: (line.unit || "un").trim(), package_size: null, package_measure: "", portion_size: null, portion_measure: "", stock_minimum: 0, cost_price: 0, sku: "", barcode: "", supplier: "", stock_quantity: 0, created_at: now() };
+        item = { name: line.name.trim(), stock_category: ["Comida", "Bebida", "Descartável"].includes(line.stock_category) ? line.stock_category : "Bebida", unit: (line.unit || "un").trim(), package_size: null, package_measure: "", portion_size: null, portion_measure: "", stock_minimum: stockNumber(line.stock_minimum || 0, `o estoque mínimo de ${line.name}`), cost_price: 0, sku: "", barcode: "", supplier: "", stock_quantity: 0, created_at: now() };
         created += 1;
       }
       const packageQuantity = stockNumber(line.package_quantity, `a quantidade de embalagens do produto ${item.name}`, false);
@@ -723,6 +746,78 @@ async function mutate(request, env) {
     if (remainingBalance <= 0.001) account.closed_at = createdAt;
     await db.batch([putRecord(db, "accounts", id, account), putRecord(db, "account_payments", paymentId, payment)]);
     return reply({ ok: true, id: paymentId, balance_after: remainingBalance, closed: remainingBalance <= 0.001 });
+  } else if (action === "stock.event.create") {
+    if (!["loss", "courtesy"].includes(input.event_type)) throw new Error("Escolha Perda ou Cortesia.");
+    required(input.responsible, "o responsável");
+    const items = await cartItems(db, input.items);
+    const withoutRecipe = items.filter((item) => !item.stock_usage.length);
+    if (withoutRecipe.length) throw new Error(`Configure a baixa de estoque antes de registrar: ${withoutRecipe.map((item) => item.description).join(", ")}.`);
+    const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!open) throw new Error("Abra o caixa antes de registrar uma perda ou cortesia.");
+    const origin = await orderOrigin(db, input.origin_token), createdAt = now(), eventId = id, requirements = new Map(), eventItems = [];
+    for (const item of items) {
+      const usage = item.stock_usage.map((component) => ({ ...component, quantity: Math.round(Number(component.quantity) * item.quantity * 10000) / 10000 }));
+      for (const component of usage) requirements.set(component.stock_item_id, (requirements.get(component.stock_item_id) || 0) + component.quantity);
+      eventItems.push({ menu_id: item.menu_id, description: item.description, quantity: item.quantity, sale_price: item.price, stock_usage: usage, cost: Math.round(usage.reduce((sum, component) => sum + component.quantity * Number(component.unit_cost || 0), 0) * 100) / 100 });
+    }
+    const statements = [], movementType = input.event_type === "loss" ? "loss" : "courtesy", label = input.event_type === "loss" ? "Perda" : "Cortesia", reason = (input.reason || "").trim();
+    for (const [stockItemId, requiredQuantity] of requirements) {
+      const stockItem = await readRecord(db, "stock_items", stockItemId), balance = await db.prepare("SELECT quantity FROM stock_balances WHERE id=?").bind(stockItemId).first();
+      if (!stockItem) throw new Error("Um insumo da ficha técnica não existe mais.");
+      if (Number(balance?.quantity || 0) + .000001 < requiredQuantity) throw new Error(`Estoque insuficiente de ${stockItem.name}. Disponível: ${Number(balance?.quantity || 0)} ${stockItem.unit || "un"}.`);
+      statements.push(...atomicStockChange(db, stockItemId, stockItem, movementType, requiredQuantity, { reason: reason ? `${label}: ${reason}` : label, responsible: input.responsible.trim(), reference_id: eventId }));
+    }
+    const event = { event_type: input.event_type, responsible: input.responsible.trim(), reason: reason || label, beneficiary: (input.beneficiary || "").trim(), items: eventItems, items_count: eventItems.length, units_count: eventItems.reduce((sum, item) => sum + item.quantity, 0), total_cost: Math.round(eventItems.reduce((sum, item) => sum + item.cost, 0) * 100) / 100, revenue_not_realized: Math.round(eventItems.reduce((sum, item) => sum + item.quantity * item.sale_price, 0) * 100) / 100, cash_session_id: origin.cash_session_id || open.id, created_at: createdAt, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" };
+    statements.push(putRecord(db, "stock_events", eventId, event));
+    await db.batch(statements);
+    return reply({ ok: true, id: eventId, total_cost: event.total_cost });
+  } else if (action === "stock.event.cancel") {
+    required(input.responsible, "o responsável pelo cancelamento"); required(input.reason, "a justificativa do cancelamento");
+    const event = await readRecord(db, "stock_events", id);
+    if (!event || event.cancelled_at) throw new Error("Ocorrência não encontrada ou já cancelada.");
+    const statements = [];
+    for (const item of event.items || []) for (const usage of item.stock_usage || []) {
+      const stockItem = await readRecord(db, "stock_items", usage.stock_item_id);
+      if (stockItem) statements.push(...atomicStockChange(db, usage.stock_item_id, stockItem, "return", usage.quantity, { reason: `Cancelamento de ${event.event_type === "loss" ? "perda" : "cortesia"}: ${input.reason.trim()}`, responsible: input.responsible.trim(), reference_id: id }));
+    }
+    event.cancelled_at = now(); event.cancelled_by = input.responsible.trim(); event.cancel_reason = input.reason.trim();
+    statements.push(putRecord(db, "stock_events", id, event)); await db.batch(statements);
+  } else if (action === "hosted.event.save") {
+    required(input.name, "o nome do evento");
+    const eventMode = input.event_mode === "contracted" ? "contracted" : "hosted";
+    const allowance = Number(input.allowance);
+    if (!Number.isFinite(allowance) || allowance < 0) throw new Error("Informe um limite de consumação válido.");
+    const existing = input.id ? await readRecord(db, "hosted_events", id) : null;
+    if (input.id && !existing) throw new Error("Evento não encontrado.");
+    if (existing?.status === "closed") throw new Error("Um evento encerrado não pode ser alterado.");
+    if (existing?.event_mode && existing.event_mode !== eventMode) throw new Error("O tipo de um evento já cadastrado não pode ser alterado.");
+    const open = await db.prepare("SELECT id,data FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!existing && !open) throw new Error("Abra o caixa antes de cadastrar um evento.");
+    const eventCashSessionId = existing?.cash_session_id || open?.id;
+    if (existing && allowance + 0.001 < Number(existing.used_amount || 0)) throw new Error("O limite não pode ser menor que a consumação já utilizada.");
+    const statements = [];
+    let feeShiftId = existing?.fee_shift_id || "";
+    let feeAmount = Number(input.fee_amount || 0);
+    if (eventMode === "contracted") {
+      if (!Number.isFinite(feeAmount) || feeAmount <= 0) throw new Error("Informe um cachê válido.");
+      if (!open && !feeShiftId) throw new Error("Abra o caixa antes de contratar uma atração.");
+      const currentShift = feeShiftId ? await readRecord(db, "staff_shifts", feeShiftId) : null;
+      if (currentShift?.status === "paid" && Math.abs(Number(currentShift.daily_rate) - feeAmount) > 0.001) throw new Error("O cachê já foi pago e não pode ter o valor alterado.");
+      feeShiftId ||= uid();
+      const cash = open ? JSON.parse(open.data) : null;
+      const shift = { ...(currentShift || {}), employee_id: "", employee_name: input.name.trim(), group: "Evento", event_type: "Atração", cash_session_id: currentShift?.cash_session_id || open?.id, work_date: currentShift?.work_date || operationalDate(cash.opened_at), daily_rate: feeAmount, status: currentShift?.status || "confirmed", note: (input.note || "").trim(), hosted_event_id: id, updated_at: now() };
+      if (!shift.created_at) shift.created_at = now();
+      statements.push(putRecord(db, "staff_shifts", feeShiftId, shift));
+    } else feeAmount = 0;
+    const hostedEvent = { ...(existing || {}), event_mode: eventMode, name: input.name.trim(), organizer: "", attraction_type: "", fee_amount: feeAmount, fee_shift_id: feeShiftId, allowance, starts_at: "", ends_at: "", cash_session_id: eventCashSessionId, allow_overage: eventMode === "hosted" && input.allow_overage === true, note: (input.note || "").trim(), status: existing?.status || "open", used_amount: Number(existing?.used_amount || 0), orders: existing?.orders || [] };
+    hostedEvent[existing ? "updated_at" : "created_at"] = now();
+    statements.push(putRecord(db, "hosted_events", id, hostedEvent));
+    await db.batch(statements);
+  } else if (action === "hosted.event.close") {
+    const hostedEvent = await readRecord(db, "hosted_events", id);
+    if (!hostedEvent || hostedEvent.status === "closed") throw new Error("Evento não encontrado ou já encerrado.");
+    hostedEvent.status = "closed"; hostedEvent.closed_at = now(); hostedEvent.closed_by = (input.responsible || "Admin").trim();
+    await putRecord(db, "hosted_events", id, hostedEvent).run();
   } else if (action === "sale.checkout") {
     const items = await cartItems(db, input.items);
     const createdAt = now();
@@ -751,6 +846,32 @@ async function mutate(request, env) {
       statements.push(putRecord(db, "accounts", accountId, account));
       for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, item_category: entry.item_category, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: orderCustomerName, payment_method: "Caderneta", account_id: accountId, account_type: account.account_type || "customer", account_item_id: entry.id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: orderCustomerName, account_id: accountId, account_type: account.account_type || "customer", cash_session_id: cashSessionId, note, origin: "Fiado", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
+    } else if (input.destination === "event") {
+      required(input.event_id, "o evento");
+      const hostedEvent = await readRecord(db, "hosted_events", input.event_id);
+      if (!hostedEvent || hostedEvent.status !== "open") throw new Error("Este evento não está disponível.");
+      if (hostedEvent.cash_session_id && hostedEvent.cash_session_id !== cashSessionId) throw new Error("Este evento pertence a outro caixa.");
+      const orderTotal = items.reduce((sum, item) => sum + item.quantity * item.price, 0);
+      const remaining = Math.max(0, Number(hostedEvent.allowance || 0) - Number(hostedEvent.used_amount || 0));
+      const covered = Math.min(orderTotal, remaining);
+      const overage = Math.max(0, orderTotal - covered);
+      if (overage > 0.001 && !hostedEvent.allow_overage) throw new Error(`O saldo do evento é ${remaining.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}. O excedente não está autorizado.`);
+      let paymentMethod = "Consumação de evento";
+      if (overage > 0.001) {
+        required(input.payment_method, "a forma de pagamento do excedente"); paymentMethod = input.payment_method;
+        if (paymentMethod === "Cartão") {
+          if (!["Débito", "Crédito"].includes(input.card_type)) throw new Error("Escolha Débito ou Crédito para o pagamento em cartão.");
+          paymentMethod = `Cartão - ${input.card_type}`;
+        } else if (!["Dinheiro", "Pix"].includes(paymentMethod)) throw new Error("Forma de pagamento inválida.");
+      }
+      const revenueRatio = orderTotal > 0 ? overage / orderTotal : 0;
+      const actualCost = items.reduce((sum, item) => sum + (item.stock_usage.length ? item.stock_usage.reduce((itemCost, usage) => itemCost + Number(usage.quantity || 0) * item.quantity * Number(usage.unit_cost || 0), 0) : Number(item.menu_item.cost_price || 0) * item.quantity), 0);
+      for (const item of items) statements.push(putRecord(db, "sales", uid(), { menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price * revenueRatio, menu_price: item.price, event_consumption_amount: item.quantity * item.price * (1 - revenueRatio), item_note: item.note, note, customer_name: hostedEvent.name, payment_method: paymentMethod, card_type: overage > 0.001 ? input.card_type || "" : "", hosted_event_id: input.event_id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
+      hostedEvent.used_amount = Number(hostedEvent.used_amount || 0) + covered;
+      hostedEvent.actual_cost = Number(hostedEvent.actual_cost || 0) + actualCost;
+      hostedEvent.orders = [...(hostedEvent.orders || []), { id: orderId, items: items.map(item => ({ menu_id: item.menu_id, description: item.description, quantity: item.quantity, unit_price: item.price, note: item.note })), order_total: orderTotal, covered_amount: covered, overage_amount: overage, actual_cost: actualCost, payment_method: paymentMethod, created_at: createdAt, created_by: origin.source_name }];
+      statements.push(putRecord(db, "hosted_events", input.event_id, hostedEvent));
+      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: hostedEvent.name, note, origin: "Consumação de evento", payment_method: paymentMethod, created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
     } else {
       required(input.payment_method, "a forma de pagamento");
       let paymentMethod = input.payment_method;
@@ -799,6 +920,12 @@ async function mutate(request, env) {
     if (!sales.length) throw new Error("Pedido não encontrado ou já cancelado.");
     if (sales.some(([,sale])=>sale.account_id)) throw new Error("Pedidos do fiado devem ser corrigidos dentro da própria ficha.");
     const responsible = input.responsible.trim(), reason = input.reason.trim(), statements = [];
+    const hostedEventId = sales.find(([,sale]) => sale.hosted_event_id)?.[1]?.hosted_event_id;
+    if (hostedEventId) {
+      const hostedEvent = await readRecord(db, "hosted_events", hostedEventId);
+      const eventOrder = hostedEvent?.orders?.find(order => order.id === input.order_id && !order.cancelled_at);
+      if (eventOrder) { hostedEvent.used_amount = Math.max(0, Number(hostedEvent.used_amount || 0) - Number(eventOrder.covered_amount || 0)); hostedEvent.actual_cost = Math.max(0, Number(hostedEvent.actual_cost || 0) - Number(eventOrder.actual_cost || 0)); eventOrder.cancelled_at = now(); eventOrder.cancelled_by = responsible; eventOrder.cancel_reason = reason; statements.push(putRecord(db, "hosted_events", hostedEventId, hostedEvent)); }
+    }
     for (const [saleId,sale] of sales) statements.push(...await voidSaleStatements(db, saleId, sale, responsible, reason));
     const kitchen = await readRecord(db, "kitchen", input.order_id);
     if (kitchen && !["delivered","done"].includes(kitchen.status)) { kitchen.status="cancelled"; kitchen.cancelled_at=now(); kitchen.cancelled_by=responsible; kitchen.cancel_reason=reason; statements.push(putRecord(db,"kitchen",input.order_id,kitchen)); }
@@ -918,12 +1045,18 @@ async function mutate(request, env) {
     }
     cash.items = [...grouped.values()].sort((a, b) => a.description.localeCompare(b.description));
     const accessRows = await db.prepare("SELECT id,data FROM records WHERE kind='staff_access' AND json_extract(data,'$.cash_session_id')=? AND json_extract(data,'$.revoked_at') IS NULL").bind(id).all();
+    const eventRows = await db.prepare("SELECT id,data FROM records WHERE kind='hosted_events' AND json_extract(data,'$.cash_session_id')=? AND COALESCE(json_extract(data,'$.status'),'open')='open'").bind(id).all();
     const statements = [putRecord(db, "cash", id, cash)];
     for (const row of accessRows.results) {
       const access = JSON.parse(row.data);
       access.revoked_at = now();
       access.revoked_reason = "cash_closed";
       statements.push(putRecord(db, "staff_access", row.id, access));
+    }
+    for (const row of eventRows.results) {
+      const hostedEvent = JSON.parse(row.data);
+      hostedEvent.status = "closed"; hostedEvent.closed_at = cash.closed_at; hostedEvent.closed_by = cash.closed_by; hostedEvent.closed_reason = "cash_closed";
+      statements.push(putRecord(db, "hosted_events", row.id, hostedEvent));
     }
     await db.batch(statements);
   } else throw new Error("Ação desconhecida.");
@@ -984,7 +1117,7 @@ export default {
           delete access.claim_code_hash;
         }
         if (!admin) {
-          const allowed = device?.role === "kitchen" ? new Set(["kitchen"]) : new Set(["menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_items", "recipes"]);
+          const allowed = device?.role === "kitchen" ? new Set(["kitchen"]) : new Set(["menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_items", "recipes", "stock_events", "hosted_events"]);
           for (const kind of KINDS) if (!allowed.has(kind)) result[kind] = {};
         }
         return reply(result);
