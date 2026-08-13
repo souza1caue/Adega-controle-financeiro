@@ -464,8 +464,8 @@ async function mutate(request, env) {
       }
       const movementQuantity = packageQuantity * unitsPerPackage * contentPerUnit;
       const hasCost = line.package_cost !== "" && line.package_cost != null;
-      const purchaseTotal = hasCost ? amount(line.package_cost, `o valor total pago por ${item.name}`) : 0;
-      const entryCost = hasCost ? purchaseTotal / movementQuantity : null;
+      const entryCost = hasCost ? amount(line.package_cost, `o valor por ${stockUnit} de ${item.name}`) : null;
+      const purchaseTotal = entryCost == null ? 0 : Math.round(entryCost * movementQuantity * 100) / 100;
       const balance = line.id ? await db.prepare("SELECT quantity FROM stock_balances WHERE id=?").bind(itemId).first() : null;
       const current = Number(balance?.quantity || 0);
       item.purchase_unit = String(line.purchase_unit || "un").trim();
@@ -617,15 +617,13 @@ async function mutate(request, env) {
   } else if (action === "account.create") {
     required(input.customer_name, "o nome do cliente");
     const accountType = input.account_type === "owner" ? "owner" : "customer";
-    if (accountType === "owner" && !admin) throw new Error("Somente o proprietário pode criar um fiado de proprietário.");
     await putRecord(db, "accounts", id, { account_type: accountType, customer_name: input.customer_name.trim(), note: (input.note || "").trim(), opening_balance: amount(input.opening_balance || 0, "o saldo inicial"), opening_balance_at: now(), items: [], payments_total: 0 }).run();
   } else if (action === "account.update") {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Fiado não encontrado.");
     required(input.customer_name, "o nome do cliente");
     account.customer_name = input.customer_name.trim();
-    if (input.account_type === "owner" && !admin) throw new Error("Somente o proprietário pode classificar um fiado como proprietário.");
-    if (admin) account.account_type = input.account_type === "owner" ? "owner" : "customer";
+    account.account_type = input.account_type === "owner" ? "owner" : "customer";
     account.note = (input.note || "").trim();
     delete account.credit_limit;
     delete account.blocked;
@@ -642,6 +640,12 @@ async function mutate(request, env) {
     const origin = await orderOrigin(db, input.origin_token);
     const entry = { id: uid(), menu_id: input.menu_id || "", description: input.description.trim(), quantity: quantity(input.quantity), price: amount(input.price, "o preço"), note: (input.note || "").trim(), created_at: createdAt, order_id: orderId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "", stock_usage: [] };
     if (entry.menu_id) entry.stock_usage = await recipeUsage(db, entry.menu_id, entry.quantity);
+    if (account.account_type === "owner" && entry.menu_id) {
+      const menuItem = await readRecord(db, "menu", entry.menu_id);
+      const totalCost = entry.stock_usage.length ? entry.stock_usage.reduce((sum, usage) => sum + Number(usage.quantity || 0) * Number(usage.unit_cost || 0), 0) : Number(menuItem?.cost_price || 0) * entry.quantity;
+      if (totalCost <= 0) throw new Error(`Configure o custo ou os insumos de ${entry.description} antes de lançar na ficha de proprietário.`);
+      entry.price = Math.round(totalCost / entry.quantity * 100) / 100;
+    }
     account.items = [...(account.items || []), entry];
     const statements = [
       putRecord(db, "accounts", id, account),
@@ -841,7 +845,7 @@ async function mutate(request, env) {
       }
       const orderCustomerName = String(account.customer_name || customerName).trim();
       required(orderCustomerName, "o nome do cliente da comanda");
-      const accountEntries = items.map((item) => ({ id: uid(), menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, note: item.note, created_at: createdAt, order_id: orderId, cash_session_id: cashSessionId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
+      const accountEntries = items.map((item) => { const ownerCost = item.stock_usage.length ? item.stock_usage.reduce((sum, usage) => sum + Number(usage.quantity || 0) * Number(usage.unit_cost || 0), 0) : Number(item.menu_item?.cost_price || 0); if (account.account_type === "owner" && ownerCost <= 0) throw new Error(`Configure o custo ou os insumos de ${item.description} antes de lançar na ficha de proprietário.`); return { id: uid(), menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: account.account_type === "owner" ? Math.round(ownerCost * 100) / 100 : item.price, note: item.note, created_at: createdAt, order_id: orderId, cash_session_id: cashSessionId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }; });
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
       for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, item_category: entry.item_category, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: orderCustomerName, payment_method: "Caderneta", account_id: accountId, account_type: account.account_type || "customer", account_item_id: entry.id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
@@ -996,7 +1000,7 @@ async function mutate(request, env) {
     const projectCode = input.project_code === "bagaco_laranja" ? "bagaco_laranja" : "adega_regular";
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' LIMIT 1").first();
     if (open) throw new Error("Já existe um caixa aberto.");
-    await putRecord(db, "cash", id, { status: "open", project_code: projectCode, project_name: projectCode === "bagaco_laranja" ? "Bagaço da Laranja" : "Adega Camisa 10", opened_at: now(), opened_by: input.opened_by.trim(), opening_amount: amount(input.opening_amount, "o valor inicial"), opening_note: (input.note || "").trim(), movements: [], closed_at: "" }).run();
+    await putRecord(db, "cash", id, { status: "open", project_code: projectCode, project_name: projectCode === "bagaco_laranja" ? "Bagaço da Laranja" : "Adega Camisa 10", opened_at: now(), opened_by: input.opened_by.trim(), opening_amount: amount(input.opening_amount, "o valor inicial em dinheiro"), opening_account_amount: amount(input.opening_account_amount || 0, "o saldo inicial da conta"), opening_note: (input.note || "").trim(), movements: [], closed_at: "" }).run();
   } else if (action === "cash.movement") {
     const cash = await readRecord(db, "cash", id);
     if (!cash || cash.status !== "open") throw new Error("Caixa aberto não encontrado.");
@@ -1028,13 +1032,16 @@ async function mutate(request, env) {
     const withdrawals = (cash.movements || []).filter((movement) => movement.type === 'withdrawal').reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
     const expectedCash = Number(cash.opening_amount || 0) + Number(paymentTotals.Dinheiro || 0) + supplies - withdrawals;
     const countedCash = amount(input.counted_cash, "o dinheiro contado");
+    const accountReceipts = Object.entries(paymentTotals).filter(([method]) => method !== "Dinheiro" && method !== "Caderneta").reduce((sum, [, value]) => sum + Number(value || 0), 0);
+    const expectedAccount = Number(cash.opening_account_amount || 0) + accountReceipts;
+    const countedAccount = amount(input.counted_account == null ? expectedAccount : input.counted_account, "o saldo conferido na conta");
     cash.status = "closed"; cash.closed_at = now(); cash.closed_by = input.closed_by.trim(); cash.closing_note = (input.note || "").trim(); cash.sales_count = new Set(parsed.map((sale) => sale.order_id || sale.created_at)).size; cash.account_payments_count = receipts.length;
     const directSalesTotal = directSales.reduce((sum, sale) => sum + Number(sale.quantity || 0) * Number(sale.price || 0), 0);
     const accountChargesTotal = accountSales.reduce((sum, sale) => sum + Number(sale.quantity || 0) * Number(sale.price || 0), 0);
     const accountReceiptsTotal = receipts.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
     cash.quantity = parsed.reduce((sum, sale) => sum + Number(sale.quantity || 0), 0);
     cash.total = directSalesTotal + accountReceiptsTotal; cash.direct_sales_total = directSalesTotal; cash.account_charges_total = accountChargesTotal; cash.account_receipts_total = accountReceiptsTotal; cash.gross_sales_total = directSalesTotal + accountChargesTotal;
-    cash.payment_totals = paymentTotals; cash.supplies_total = supplies; cash.withdrawals_total = withdrawals; cash.expected_cash = expectedCash; cash.counted_cash = countedCash; cash.difference = countedCash - expectedCash;
+    cash.payment_totals = paymentTotals; cash.supplies_total = supplies; cash.withdrawals_total = withdrawals; cash.expected_cash = expectedCash; cash.counted_cash = countedCash; cash.difference = countedCash - expectedCash; cash.account_receipts_total = accountReceipts; cash.expected_account = expectedAccount; cash.counted_account = countedAccount; cash.account_difference = countedAccount - expectedAccount;
     const grouped = new Map();
     for (const sale of parsed) {
       const key = sale.description.trim().toLocaleLowerCase();

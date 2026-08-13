@@ -8,3 +8,5 @@ cloudflare/.wrangler/
 cloudflare/node_modules/
 cloudflare/.dev.vars
 cloudflare/seed.sql
+cloudflare/backup-*.sql
+cloudflare/.audit-backup-db/
