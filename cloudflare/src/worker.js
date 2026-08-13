@@ -841,7 +841,7 @@ async function mutate(request, env) {
       let account = await readRecord(db, "accounts", accountId);
       if (!account) {
         required(customerName, "o cliente para criar o fiado");
-        account = { account_type: "customer", customer_name: customerName, note: "", opening_balance: 0, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
+        account = { account_type: input.account_type === "owner" ? "owner" : "customer", customer_name: customerName, note: "", opening_balance: 0, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
       }
       const orderCustomerName = String(account.customer_name || customerName).trim();
       required(orderCustomerName, "o nome do cliente da comanda");
