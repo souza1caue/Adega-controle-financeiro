@@ -277,7 +277,7 @@ async function mutate(request, env) {
   const db = env.DB;
   const staffToken = request.headers.get("x-staff-access") || "";
   const device = await authorizedDevice(request, env);
-  const frontActions = new Set(["sale.checkout", "sale.order.void", "stock.event.create", "account.addItem", "account.create", "account.update", "account.receivePayment", "account.cancelItem", "kitchen.status"]);
+  const frontActions = new Set(["sale.checkout", "sale.order.void", "stock.event.create", "account.addItem", "account.create", "account.update", "account.receivePayment", "account.convertToCredit", "account.cancelItem", "kitchen.status"]);
   if (staffToken) {
     if (!frontActions.has(action)) return reply({ error: "Este QR Code permite acesso somente à Frente de Caixa." }, 403);
     await orderOrigin(db, staffToken);
@@ -616,14 +616,17 @@ async function mutate(request, env) {
     await db.prepare("DELETE FROM records WHERE kind='menu' AND id=?").bind(id).run();
   } else if (action === "account.create") {
     required(input.customer_name, "o nome do cliente");
-    const accountType = input.account_type === "owner" ? "owner" : "customer";
-    await putRecord(db, "accounts", id, { account_type: accountType, customer_name: input.customer_name.trim(), note: (input.note || "").trim(), opening_balance: amount(input.opening_balance || 0, "o saldo inicial"), opening_balance_at: now(), items: [], payments_total: 0 }).run();
+    const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    const accountType = !admin ? "tab" : input.account_type === "tab" ? "tab" : input.account_type === "owner" ? "owner" : "customer";
+    if (accountType === "tab" && !open) throw new Error("Abra o caixa antes de abrir uma comanda.");
+    await putRecord(db, "accounts", id, { account_type: accountType, customer_name: input.customer_name.trim(), note: (input.note || "").trim(), opening_balance: accountType === "tab" ? 0 : amount(input.opening_balance || 0, "o saldo inicial"), opening_balance_at: now(), cash_session_id: accountType === "tab" ? open.id : "", status: accountType === "tab" ? "open" : undefined, items: [], payments_total: 0, created_at: now() }).run();
   } else if (action === "account.update") {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Fiado não encontrado.");
+    if (!admin && account.account_type !== "tab") throw new Error("O fiado está disponível somente no Admin.");
     required(input.customer_name, "o nome do cliente");
     account.customer_name = input.customer_name.trim();
-    account.account_type = input.account_type === "owner" ? "owner" : "customer";
+    account.account_type = account.account_type === "tab" ? "tab" : input.account_type === "owner" ? "owner" : "customer";
     account.note = (input.note || "").trim();
     delete account.credit_limit;
     delete account.blocked;
@@ -634,6 +637,7 @@ async function mutate(request, env) {
   } else if (action === "account.addItem") {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Conta não encontrada.");
+    if (!admin && account.account_type !== "tab") throw new Error("O fiado está disponível somente no Admin.");
     required(input.description, "o item");
     const createdAt = now();
     const orderId = uid();
@@ -669,6 +673,7 @@ async function mutate(request, env) {
   } else if (action === "account.cancelItem") {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Conta não encontrada.");
+    if (!admin && account.account_type !== "tab") throw new Error("O fiado está disponível somente no Admin.");
     required(input.reason, "o motivo do cancelamento");
     required(input.responsible, "o responsável pelo cancelamento");
     const item = (account.items || []).find((entry, index) => entry.id ? entry.id === input.item_id : index === Number(input.index));
@@ -703,8 +708,10 @@ async function mutate(request, env) {
   } else if (action === "account.receivePayment") {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Conta não encontrada.");
+    if (!admin && account.account_type !== "tab") throw new Error("O fiado está disponível somente no Admin.");
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
-    if (!open) throw new Error("Abra o caixa antes de receber um fiado.");
+    if (!open) throw new Error(`Abra o caixa antes de receber ${account.account_type === "tab" ? "uma comanda" : "um fiado"}.`);
+    if (account.account_type === "tab" && account.cash_session_id !== open.id) throw new Error("Esta comanda pertence a outro caixa.");
     required(input.payment_method, "a forma de pagamento");
     let paymentMethod = input.payment_method;
     if (paymentMethod === "Cartão") {
@@ -747,9 +754,28 @@ async function mutate(request, env) {
     const remainingBalance = Math.max(0, Math.round((balance - received) * 100) / 100);
     account.payments_total = Math.round((Number(account.payments_total || 0) + received) * 100) / 100;
     account.last_payment_at = createdAt;
-    if (remainingBalance <= 0.001) account.closed_at = createdAt;
+    if (remainingBalance <= 0.001) { account.closed_at = createdAt; if (account.account_type === "tab") account.status = "closed"; }
     await db.batch([putRecord(db, "accounts", id, account), putRecord(db, "account_payments", paymentId, payment)]);
     return reply({ ok: true, id: paymentId, balance_after: remainingBalance, closed: remainingBalance <= 0.001 });
+  } else if (action === "account.convertToCredit") {
+    const tab = await readRecord(db, "accounts", id);
+    if (!tab || tab.account_type !== "tab" || tab.status === "closed") throw new Error("Comanda aberta não encontrada.");
+    const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!open || tab.cash_session_id !== open.id) throw new Error("Esta comanda não pertence ao caixa aberto.");
+    const balance = accountBalance(tab);
+    if (balance <= 0.001) throw new Error("Esta comanda não possui saldo para transferir.");
+    required(input.customer_name, "o nome da ficha de fiado");
+    let creditId = input.credit_account_id || uid();
+    let credit = input.credit_account_id ? await readRecord(db, "accounts", creditId) : null;
+    if (credit && credit.account_type === "tab") throw new Error("Escolha uma ficha de fiado válida.");
+    if (!credit) credit = { account_type: "customer", customer_name: input.customer_name.trim(), note: (input.note || "").trim(), opening_balance: 0, opening_balance_at: now(), items: [], payments_total: 0, created_at: now() };
+    const createdAt = now(), transferItem = { id: uid(), description: `Saldo transferido da comanda ${tab.customer_name}`, quantity: 1, price: balance, note: (input.note || "").trim(), created_at: createdAt, order_id: uid(), created_by: input.responsible?.trim() || "Caixa principal", source_tab_id: id };
+    credit.items = [...(credit.items || []), transferItem];
+    tab.payments_total = Math.round((Number(tab.payments_total || 0) + balance) * 100) / 100;
+    tab.status = "closed"; tab.closed_at = createdAt; tab.converted_to_account_id = creditId;
+    const transfer = { account_id: id, customer_name: tab.customer_name, amount: balance, payment_method: "Transferido para fiado", responsible: input.responsible?.trim() || "Caixa principal", note: (input.note || "").trim(), settlement_type: "transfer", converted_account_id: creditId, created_at: createdAt };
+    await db.batch([putRecord(db, "accounts", id, tab), putRecord(db, "accounts", creditId, credit), putRecord(db, "account_payments", uid(), transfer)]);
+    return reply({ ok: true, id: creditId, closed: true });
   } else if (action === "stock.event.create") {
     if (!["loss", "courtesy"].includes(input.event_type)) throw new Error("Escolha Perda ou Cortesia.");
     required(input.responsible, "o responsável");
@@ -823,6 +849,7 @@ async function mutate(request, env) {
     hostedEvent.status = "closed"; hostedEvent.closed_at = now(); hostedEvent.closed_by = (input.responsible || "Admin").trim();
     await putRecord(db, "hosted_events", id, hostedEvent).run();
   } else if (action === "sale.checkout") {
+    if (!admin && (input.destination === "account" || input.to_account === true)) throw new Error("O fiado está disponível somente no Admin. Use uma comanda.");
     const items = await cartItems(db, input.items);
     const createdAt = now();
     const origin = await orderOrigin(db, input.origin_token);
@@ -836,20 +863,23 @@ async function mutate(request, env) {
     const shouldPrint = foodItems.length > 0;
     const orderId = id;
 
-    if (input.destination === "account" || input.to_account === true) {
+    if (input.destination === "account" || input.destination === "tab" || input.to_account === true) {
       const accountId = input.account_id || uid();
       let account = await readRecord(db, "accounts", accountId);
       if (!account) {
-        required(customerName, "o cliente para criar o fiado");
-        account = { account_type: input.account_type === "owner" ? "owner" : "customer", customer_name: customerName, note: "", opening_balance: 0, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
+        required(customerName, input.destination === "tab" ? "o nome para abrir a comanda" : "o cliente para criar o fiado");
+        account = input.destination === "tab"
+          ? { account_type: "tab", customer_name: customerName, note: "", opening_balance: 0, created_at: createdAt, cash_session_id: cashSessionId, status: "open", items: [], payments_total: 0 }
+          : { account_type: input.account_type === "owner" ? "owner" : "customer", customer_name: customerName, note: "", opening_balance: 0, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
       }
+      if (input.destination === "tab" && (account.account_type !== "tab" || account.cash_session_id !== cashSessionId || account.status === "closed")) throw new Error("Escolha uma comanda aberta deste caixa.");
       const orderCustomerName = String(account.customer_name || customerName).trim();
       required(orderCustomerName, "o nome do cliente da comanda");
       const accountEntries = items.map((item) => { const ownerCost = item.stock_usage.length ? item.stock_usage.reduce((sum, usage) => sum + Number(usage.quantity || 0) * Number(usage.unit_cost || 0), 0) : Number(item.menu_item?.cost_price || 0); if (account.account_type === "owner" && ownerCost <= 0) throw new Error(`Configure o custo ou os insumos de ${item.description} antes de lançar na ficha de proprietário.`); return { id: uid(), menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: account.account_type === "owner" ? Math.round(ownerCost * 100) / 100 : item.price, note: item.note, created_at: createdAt, order_id: orderId, cash_session_id: cashSessionId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }; });
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
-      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, item_category: entry.item_category, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: orderCustomerName, payment_method: "Caderneta", account_id: accountId, account_type: account.account_type || "customer", account_item_id: entry.id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
-      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: orderCustomerName, account_id: accountId, account_type: account.account_type || "customer", cash_session_id: cashSessionId, note, origin: "Fiado", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
+      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, item_category: entry.item_category, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: orderCustomerName, payment_method: account.account_type === "tab" ? "Comanda" : "Caderneta", account_id: accountId, account_type: account.account_type || "customer", account_item_id: entry.id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
+      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: orderCustomerName, account_id: accountId, account_type: account.account_type || "customer", cash_session_id: cashSessionId, note, origin: account.account_type === "tab" ? "Comanda" : "Fiado", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
     } else if (input.destination === "event") {
       required(input.event_id, "o evento");
       const hostedEvent = await readRecord(db, "hosted_events", input.event_id);
@@ -1015,6 +1045,9 @@ async function mutate(request, env) {
     const kitchenOpen = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='kitchen' AND COALESCE(json_extract(data,'$.status'),'pending') NOT IN ('delivered','done','cancelled')").first();
     const kitchenOpenCount = Number(kitchenOpen?.total || 0);
     if (kitchenOpenCount) throw new Error(`Não é possível fechar o caixa: ${kitchenOpenCount} pedido${kitchenOpenCount === 1 ? "" : "s"} ainda ${kitchenOpenCount === 1 ? "está" : "estão"} em andamento na cozinha.`);
+    const openTabs = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='accounts' AND json_extract(data,'$.account_type')='tab' AND json_extract(data,'$.cash_session_id')=? AND COALESCE(json_extract(data,'$.status'),'open')='open'").bind(id).first();
+    const openTabCount = Number(openTabs?.total || 0);
+    if (openTabCount) throw new Error(`Não é possível fechar o caixa: ${openTabCount} comanda${openTabCount === 1 ? " está" : "s estão"} aberta${openTabCount === 1 ? "" : "s"}. Quite ou transfira ${openTabCount === 1 ? "a comanda" : "as comandas"} para o fiado antes de continuar.`);
     const staffPending = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='staff_shifts' AND json_extract(data,'$.cash_session_id')=? AND COALESCE(json_extract(data,'$.status'),'confirmed') NOT IN ('paid','cancelled')").bind(id).first();
     const staffPendingCount = Number(staffPending?.total || 0);
     if (staffPendingCount) throw new Error(`Não é possível fechar o caixa: ${staffPendingCount} pagamento${staffPendingCount === 1 ? "" : "s"} da equipe ainda ${staffPendingCount === 1 ? "está" : "estão"} pendente${staffPendingCount === 1 ? "" : "s"}. Pague ou cancele ${staffPendingCount === 1 ? "a diária" : "as diárias"} antes de continuar.`);
