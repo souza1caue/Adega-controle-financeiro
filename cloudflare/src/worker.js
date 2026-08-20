@@ -764,11 +764,11 @@ async function mutate(request, env) {
     if (!open || tab.cash_session_id !== open.id) throw new Error("Esta comanda não pertence ao caixa aberto.");
     const balance = accountBalance(tab);
     if (balance <= 0.001) throw new Error("Esta comanda não possui saldo para transferir.");
-    required(input.customer_name, "o nome da ficha de fiado");
     let creditId = input.credit_account_id || uid();
     let credit = input.credit_account_id ? await readRecord(db, "accounts", creditId) : null;
+    if (input.credit_account_id && !credit) throw new Error("A ficha de fiado escolhida não foi encontrada.");
     if (credit && credit.account_type === "tab") throw new Error("Escolha uma ficha de fiado válida.");
-    if (!credit) credit = { account_type: "customer", customer_name: input.customer_name.trim(), note: (input.note || "").trim(), opening_balance: 0, opening_balance_at: now(), items: [], payments_total: 0, created_at: now() };
+    if (!credit) { required(input.customer_name, "o nome da nova ficha de fiado"); credit = { account_type: "customer", customer_name: input.customer_name.trim(), note: (input.note || "").trim(), opening_balance: 0, opening_balance_at: now(), items: [], payments_total: 0, created_at: now() }; }
     const createdAt = now(), transferItem = { id: uid(), description: `Saldo transferido da comanda ${tab.customer_name}`, quantity: 1, price: balance, note: (input.note || "").trim(), created_at: createdAt, order_id: uid(), created_by: input.responsible?.trim() || "Caixa principal", source_tab_id: id };
     credit.items = [...(credit.items || []), transferItem];
     tab.payments_total = Math.round((Number(tab.payments_total || 0) + balance) * 100) / 100;
