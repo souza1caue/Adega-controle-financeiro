@@ -718,7 +718,14 @@ async function mutate(request, env) {
       if (!["Débito", "Crédito"].includes(input.card_type)) throw new Error("Escolha Débito ou Crédito para o pagamento em cartão.");
       paymentMethod = `Cartão - ${input.card_type}`;
     } else if (!["Dinheiro", "Pix"].includes(paymentMethod)) throw new Error("Forma de pagamento inválida.");
-    required(input.responsible, "o responsável pelo recebimento");
+    let paymentResponsible;
+    if (account.account_type === "tab") {
+      const origin = input.origin_token ? await orderOrigin(db, input.origin_token) : null;
+      paymentResponsible = origin?.source_name || device?.label || "Caixa principal";
+    } else {
+      required(input.responsible, "o responsável pelo recebimento");
+      paymentResponsible = input.responsible.trim();
+    }
     const received = amount(input.amount, "um valor", false);
     const balance = accountBalance(account);
     if (received > balance + 0.001) throw new Error(`O valor informado é maior que o saldo de R$ ${balance.toFixed(2).replace('.', ',')}.`);
@@ -750,7 +757,7 @@ async function mutate(request, env) {
     }
     const paymentId = uid();
     const createdAt = now();
-    const payment = { account_id: id, customer_name: account.customer_name, amount: received, payment_method: paymentMethod, card_type: input.card_type || "", responsible: input.responsible.trim(), note: (input.note || "").trim(), settlement_type: settlementType, split_people: settlementType === "equal" ? Math.max(2, Number(input.split_people || 2)) : null, allocations, cash_session_id: open.id, created_at: createdAt };
+    const payment = { account_id: id, customer_name: account.customer_name, amount: received, payment_method: paymentMethod, card_type: input.card_type || "", responsible: paymentResponsible, note: (input.note || "").trim(), settlement_type: settlementType, split_people: settlementType === "equal" ? Math.max(2, Number(input.split_people || 2)) : null, allocations, cash_session_id: open.id, created_at: createdAt };
     const remainingBalance = Math.max(0, Math.round((balance - received) * 100) / 100);
     account.payments_total = Math.round((Number(account.payments_total || 0) + received) * 100) / 100;
     account.last_payment_at = createdAt;
