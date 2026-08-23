@@ -206,7 +206,7 @@ async function voidSaleStatements(db, id, sale, responsible, reason) {
 function stockMovement(db, menuId, product, type, quantityValue, details = {}) {
   const movementQuantity = stockNumber(quantityValue, "a quantidade da movimentação", false);
   const before = Number(product.stock_quantity || 0);
-  const signed = ["sale", "loss", "out", "courtesy"].includes(type) ? -movementQuantity : movementQuantity;
+  const signed = ["sale", "loss", "out", "courtesy", "staff_consumption"].includes(type) ? -movementQuantity : movementQuantity;
   const after = Math.round((before + signed) * 1000) / 1000;
   if (after < 0) throw new Error(`Estoque insuficiente para ${product.name}. Disponível: ${before}.`);
   product.stock_quantity = after;
@@ -222,7 +222,7 @@ function stockMovement(db, menuId, product, type, quantityValue, details = {}) {
 
 function atomicStockChange(db, stockItemId, product, type, quantityValue, details = {}) {
   const movementQuantity = stockNumber(quantityValue, "a quantidade da movimentação", false);
-  const signed = ["sale", "loss", "out", "courtesy"].includes(type) ? -movementQuantity : movementQuantity;
+  const signed = ["sale", "loss", "out", "courtesy", "staff_consumption"].includes(type) ? -movementQuantity : movementQuantity;
   const movementId = uid();
   const update = db.prepare("UPDATE stock_balances SET quantity=quantity+?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(signed, stockItemId);
   const movement = db.prepare(`INSERT INTO records(kind,id,data,updated_at)
@@ -784,27 +784,33 @@ async function mutate(request, env) {
     await db.batch([putRecord(db, "accounts", id, tab), putRecord(db, "accounts", creditId, credit), putRecord(db, "account_payments", uid(), transfer)]);
     return reply({ ok: true, id: creditId, closed: true });
   } else if (action === "stock.event.create") {
-    if (!["loss", "courtesy"].includes(input.event_type)) throw new Error("Escolha Perda ou Cortesia.");
-    required(input.responsible, "o responsável");
+    if (!["loss", "courtesy", "staff_consumption"].includes(input.event_type)) throw new Error("Tipo de saída inválido.");
     const items = await cartItems(db, input.items);
     const withoutRecipe = items.filter((item) => !item.stock_usage.length);
     if (withoutRecipe.length) throw new Error(`Configure a baixa de estoque antes de registrar: ${withoutRecipe.map((item) => item.description).join(", ")}.`);
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
     if (!open) throw new Error("Abra o caixa antes de registrar uma perda ou cortesia.");
+    let beneficiary = (input.beneficiary || "").trim(), responsible = (input.responsible || "").trim();
+    if (input.event_type === "staff_consumption") {
+      required(input.employee_id, "o funcionário");
+      const shift = await readRecord(db, "staff_shifts", input.employee_id);
+      if (!shift || shift.cash_session_id !== open.id || shift.status === "cancelled" || shift.group === "Evento") throw new Error("Escolha um funcionário da equipe deste caixa.");
+      beneficiary = shift.employee_name; responsible = shift.employee_name;
+    } else required(responsible, "o responsável");
     const origin = await orderOrigin(db, input.origin_token), createdAt = now(), eventId = id, requirements = new Map(), eventItems = [];
     for (const item of items) {
       const usage = item.stock_usage.map((component) => ({ ...component, quantity: Math.round(Number(component.quantity) * item.quantity * 10000) / 10000 }));
       for (const component of usage) requirements.set(component.stock_item_id, (requirements.get(component.stock_item_id) || 0) + component.quantity);
       eventItems.push({ menu_id: item.menu_id, description: item.description, quantity: item.quantity, sale_price: item.price, stock_usage: usage, cost: Math.round(usage.reduce((sum, component) => sum + component.quantity * Number(component.unit_cost || 0), 0) * 100) / 100 });
     }
-    const statements = [], movementType = input.event_type === "loss" ? "loss" : "courtesy", label = input.event_type === "loss" ? "Perda" : "Cortesia", reason = (input.reason || "").trim();
+    const statements = [], movementType = input.event_type === "loss" ? "loss" : input.event_type === "staff_consumption" ? "staff_consumption" : "courtesy", label = input.event_type === "loss" ? "Perda" : input.event_type === "staff_consumption" ? "Consumação de funcionário" : "Cortesia", reason = (input.reason || "").trim();
     for (const [stockItemId, requiredQuantity] of requirements) {
       const stockItem = await readRecord(db, "stock_items", stockItemId), balance = await db.prepare("SELECT quantity FROM stock_balances WHERE id=?").bind(stockItemId).first();
       if (!stockItem) throw new Error("Um insumo da ficha técnica não existe mais.");
       if (Number(balance?.quantity || 0) + .000001 < requiredQuantity) throw new Error(`Estoque insuficiente de ${stockItem.name}. Disponível: ${Number(balance?.quantity || 0)} ${stockItem.unit || "un"}.`);
-      statements.push(...atomicStockChange(db, stockItemId, stockItem, movementType, requiredQuantity, { reason: reason ? `${label}: ${reason}` : label, responsible: input.responsible.trim(), reference_id: eventId }));
+      statements.push(...atomicStockChange(db, stockItemId, stockItem, movementType, requiredQuantity, { reason: reason ? `${label}: ${reason}` : label, responsible, reference_id: eventId }));
     }
-    const event = { event_type: input.event_type, responsible: input.responsible.trim(), reason: reason || label, beneficiary: (input.beneficiary || "").trim(), items: eventItems, items_count: eventItems.length, units_count: eventItems.reduce((sum, item) => sum + item.quantity, 0), total_cost: Math.round(eventItems.reduce((sum, item) => sum + item.cost, 0) * 100) / 100, revenue_not_realized: Math.round(eventItems.reduce((sum, item) => sum + item.quantity * item.sale_price, 0) * 100) / 100, cash_session_id: origin.cash_session_id || open.id, created_at: createdAt, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" };
+    const event = { event_type: input.event_type, responsible, reason: reason || label, beneficiary, employee_shift_id: input.event_type === "staff_consumption" ? input.employee_id : "", items: eventItems, items_count: eventItems.length, units_count: eventItems.reduce((sum, item) => sum + item.quantity, 0), total_cost: Math.round(eventItems.reduce((sum, item) => sum + item.cost, 0) * 100) / 100, revenue_not_realized: Math.round(eventItems.reduce((sum, item) => sum + item.quantity * item.sale_price, 0) * 100) / 100, cash_session_id: origin.cash_session_id || open.id, created_at: createdAt, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" };
     statements.push(putRecord(db, "stock_events", eventId, event));
     await db.batch(statements);
     return reply({ ok: true, id: eventId, total_cost: event.total_cost });
@@ -815,7 +821,7 @@ async function mutate(request, env) {
     const statements = [];
     for (const item of event.items || []) for (const usage of item.stock_usage || []) {
       const stockItem = await readRecord(db, "stock_items", usage.stock_item_id);
-      if (stockItem) statements.push(...atomicStockChange(db, usage.stock_item_id, stockItem, "return", usage.quantity, { reason: `Cancelamento de ${event.event_type === "loss" ? "perda" : "cortesia"}: ${input.reason.trim()}`, responsible: input.responsible.trim(), reference_id: id }));
+      if (stockItem) statements.push(...atomicStockChange(db, usage.stock_item_id, stockItem, "return", usage.quantity, { reason: `Cancelamento de ${event.event_type === "loss" ? "perda" : event.event_type === "staff_consumption" ? "consumação de funcionário" : "cortesia"}: ${input.reason.trim()}`, responsible: input.responsible.trim(), reference_id: id }));
     }
     event.cancelled_at = now(); event.cancelled_by = input.responsible.trim(); event.cancel_reason = input.reason.trim();
     statements.push(putRecord(db, "stock_events", id, event)); await db.batch(statements);
