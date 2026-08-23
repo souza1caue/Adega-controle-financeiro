@@ -34,6 +34,7 @@ let pendingStockEventItems = [];
 let cart = (()=>{try{return JSON.parse(localStorage.getItem("saleCart")||"{}")||{}}catch{return {}}})();
 let tabOrderAccountId = "", tabOrderCart = {}, tabOrderSearch = "", tabOrderSubmitting = false;
 let staffConsumptionCart = {}, staffConsumptionSearch = "", staffConsumptionSubmitting = false;
+let searchRenderTimer = null;
 
 const esc = (v="") => systemLabel(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const systemLabel = value => String(value||"").replace(/^(?:Cadernetas?|Fichas?)$/i,"Fiado").replace(/^Cartão\s*-\s*(Débito|Crédito)$/i,"Cartão · $1").replace(/^Cartão$/i,"Cartão · não informado");
@@ -67,6 +68,7 @@ const cartLines = () => entries(cart).filter(([id,line])=>data.menu[id]&&Number(
 const cartQuantity = () => cartLines().reduce((sum,[,line])=>sum+Number(line.quantity),0);
 const cartTotal = () => cartLines().reduce((sum,[id,line])=>sum+Number(line.quantity)*Number(data.menu[id].price),0);
 function saveCart(){localStorage.setItem("saleCart",JSON.stringify(cart))}
+function scheduleSearchRender(selector,render){clearTimeout(searchRenderTimer);const active=document.activeElement,selection=active?.matches?.(selector)?[active.selectionStart,active.selectionEnd]:null;searchRenderTimer=setTimeout(()=>{render();const input=document.querySelector(selector);if(!input)return;input.focus({preventScroll:true});if(selection&&typeof input.setSelectionRange==="function"){const start=Math.min(selection[0]??input.value.length,input.value.length),end=Math.min(selection[1]??start,input.value.length);input.setSelectionRange(start,end)}},100)}
 function changeCart(id,delta){const current=cart[id]||{},next=Number(current.quantity||0)+delta,state=productStockState(id),available=state.available;if(delta>0&&next>available){toast(state.reason||`Disponível para venda: ${available} unidade(s).`,true);return}if(next>0)cart[id]={...current,quantity:next};else delete cart[id];saveCart();draw()}
 const kitchenViewOpen = () => module==="Cozinha" || module==="Admin"&&page==="kitchen";
 function prepareKitchenAlerts(){
@@ -176,7 +178,7 @@ async function mutate(payload, admin=false){
 }
 function toast(message,error=false){const box=document.querySelector("#toast");box.textContent=fiadoLabels(message);box.className=error?"show error":"show";setTimeout(()=>box.className="",2800)}
 function openModal(html){modalBody.innerHTML=`<div class="modal-content">${fiadoLabels(String(html).replace(/Cadernetas/g,"Fiado").replace(/cadernetas/g,"fiado").replace(/Caderneta/g,"Fiado").replace(/caderneta/g,"fiado"))}</div>`;if(!modal.open)modal.showModal()}
-function closeModal(){modal.close();modal.classList.remove("tab-order-dialog");modalBody.innerHTML=""}
+function closeModal(){clearTimeout(searchRenderTimer);searchRenderTimer=null;modal.close();modal.classList.remove("tab-order-dialog");modalBody.innerHTML=""}
 function heading(title,action=""){return `<div class="section-head"><div><div class="eyebrow">${esc(module||"Sistema")}</div><h1>${esc(title)}</h1></div>${action}</div>`}
 function empty(text){return `<div class="empty">${esc(text)}</div>`}
 
@@ -573,7 +575,7 @@ function renderTabOrderDialog(){
   const tiles=products.map(([id,item])=>{const state=productStockState(id),out=state.available<=0;return`<button type="button" class="tab-order-product ${out?'stock-out':''}" data-tab-order-add="${id}" ${out?'disabled':''}><span>${esc(saleGroup(item))}</span><b>${esc(item.name)}</b><strong>${money(item.price)}</strong><small>${out?esc(state.reason):state.tracked?`${state.available} disponíveis`:'Disponível'}</small></button>`}).join("")||empty("Nenhum produto encontrado.");
   const orderLines=lines.map(([id,line])=>`<div class="tab-order-line"><div><b>${esc(data.menu[id].name)}</b><small>${money(data.menu[id].price)} cada</small></div><div class="quantity-control"><button type="button" data-tab-order-minus="${id}">−</button><b>${line.quantity}</b><button type="button" data-tab-order-add="${id}">+</button></div><strong>${money(Number(line.quantity)*Number(data.menu[id].price))}</strong></div>`).join("")||`<div class="cart-empty"><span>＋</span><b>Pedido vazio</b><small>Selecione os produtos ao lado.</small></div>`;
   const html=`<div class="tab-order-head"><div><span class="eyebrow">Adicionar direto à comanda</span><h2>${esc(account.customer_name)}</h2></div><button type="button" class="ghost" data-close>Cancelar</button></div><div class="tab-order-layout"><section><label class="product-search"><span aria-hidden="true">⌕</span><input data-tab-order-search value="${esc(tabOrderSearch)}" placeholder="Buscar produto pelo nome..." autocomplete="off" autofocus></label><div class="tab-order-products">${tiles}</div></section><aside class="tab-order-current"><div class="cart-title"><div><span class="eyebrow">Pedido atual</span><h2>${tabOrderQuantity()} ${tabOrderQuantity()===1?'item':'itens'}</h2></div></div><div class="tab-order-lines">${orderLines}</div><div class="tab-order-footer"><div class="cart-total"><span>Total</span><b>${money(tabOrderTotal())}</b></div><form data-form="tab-order"><input type="hidden" name="account_id" value="${tabOrderAccountId}"><button class="primary checkout-button" type="submit" ${lines.length&&!tabOrderSubmitting?'':'disabled'}>${tabOrderSubmitting?'Adicionando...':`Confirmar na comanda · ${money(tabOrderTotal())}`}</button></form></div></aside></div>`;
-  modal.classList.add("tab-order-dialog");openModal(html);requestAnimationFrame(()=>{const input=modalBody.querySelector("[data-tab-order-search]");if(input&&document.activeElement!==input){input.focus();input.setSelectionRange(tabOrderSearch.length,tabOrderSearch.length)}})
+  modal.classList.add("tab-order-dialog");openModal(html)
 }
 function menuCost(id){const recipe=data.recipes[id];if(!Array.isArray(recipe?.components)||!recipe.components.length)return 0;return recipe.components.reduce((sum,component)=>sum+Number(component.quantity||0)*Number(data.stock_items[component.stock_item_id]?.cost_price||0),0)}
 function staffConsumptionDialog(){
@@ -815,10 +817,10 @@ document.addEventListener("input",event=>{
   if(event.target.matches("[data-form='menu'] [name='component_quantity']"))updateMenuRecipeCosts(event.target.form);
   if(event.target.matches("[data-form='stock-purchase'] [name='quantity'],[data-form='stock-purchase'] [name='units_per_package'],[data-form='stock-purchase'] [name='unit_cost']"))updateStockPurchaseCalculation(event.target.form);
   if(event.target.matches("[data-form='stock-purchase-line'] [name='package_quantity'],[data-form='stock-purchase-line'] [name='units_per_package'],[data-form='stock-purchase-line'] [name='package_cost'],[data-form='stock-purchase-line'] [name='content_per_unit']"))updateBatchPurchaseLinePreview(event.target.form);
-  if(event.target.matches("[data-product-search]")){saleSearch=event.target.value;draw();requestAnimationFrame(()=>{const input=document.querySelector("[data-product-search]");if(input){input.focus();input.setSelectionRange(saleSearch.length,saleSearch.length)}})}
-  if(event.target.matches("[data-account-search]")){accountSearch=event.target.value;draw();requestAnimationFrame(()=>{const input=document.querySelector("[data-account-search]");if(input){input.focus();input.setSelectionRange(accountSearch.length,accountSearch.length)}})}
-  if(event.target.matches("[data-tab-order-search]")){tabOrderSearch=event.target.value;renderTabOrderDialog()}
-  if(event.target.matches("[data-staff-consumption-search]")){staffConsumptionSearch=event.target.value;renderStaffConsumptionDialog()}
+  if(event.target.matches("[data-product-search]")){saleSearch=event.target.value;if(!event.isComposing)scheduleSearchRender("[data-product-search]",draw)}
+  if(event.target.matches("[data-account-search]")){accountSearch=event.target.value;if(!event.isComposing)scheduleSearchRender("[data-account-search]",draw)}
+  if(event.target.matches("[data-tab-order-search]")){tabOrderSearch=event.target.value;if(!event.isComposing)scheduleSearchRender("[data-tab-order-search]",renderTabOrderDialog)}
+  if(event.target.matches("[data-staff-consumption-search]")){staffConsumptionSearch=event.target.value;if(!event.isComposing)scheduleSearchRender("[data-staff-consumption-search]",renderStaffConsumptionDialog)}
   if(event.target.matches("[data-form='stock-item'] [name='entry_quantity'],[data-form='stock-item'] [name='cost_price']")){const form=event.target.form,total=Number(form.elements.entry_quantity.value||0)*Number(form.elements.cost_price.value||0);form.querySelector("[data-manual-stock-total]").textContent=money(Number.isFinite(total)?total:0)}
   if(event.target.matches("[data-form='account-payment'] [name='amount']")){updatePaymentRemaining(event.target.form);updateAccountPaymentChange(event.target.form)}
   if(event.target.matches("[data-form='account-payment'] [name='split_people'],[data-form='account-payment'] [data-allocation-item],[data-form='account-payment'] [data-allocation-toggle]")){if(event.target.matches("[data-allocation-item]")&&event.target.value!==""){const maximum=Number(event.target.max),value=Number(event.target.value);if(Number.isFinite(maximum)&&value>maximum)event.target.value=String(maximum);else if(value<0)event.target.value="0"}updateAccountPaymentFields(event.target.form)}
