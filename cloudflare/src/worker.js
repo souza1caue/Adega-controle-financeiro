@@ -792,10 +792,8 @@ async function mutate(request, env) {
     if (!open) throw new Error("Abra o caixa antes de registrar uma perda ou cortesia.");
     let beneficiary = (input.beneficiary || "").trim(), responsible = (input.responsible || "").trim();
     if (input.event_type === "staff_consumption") {
-      required(input.employee_id, "o funcionário");
-      const shift = await readRecord(db, "staff_shifts", input.employee_id);
-      if (!shift || shift.cash_session_id !== open.id || shift.status === "cancelled" || shift.group === "Evento") throw new Error("Escolha um funcionário da equipe deste caixa.");
-      beneficiary = shift.employee_name; responsible = shift.employee_name;
+      const origin = await orderOrigin(db, input.origin_token);
+      beneficiary = "Equipe do caixa"; responsible = origin.source_name;
     } else required(responsible, "o responsável");
     const origin = await orderOrigin(db, input.origin_token), createdAt = now(), eventId = id, requirements = new Map(), eventItems = [];
     for (const item of items) {
@@ -810,7 +808,7 @@ async function mutate(request, env) {
       if (Number(balance?.quantity || 0) + .000001 < requiredQuantity) throw new Error(`Estoque insuficiente de ${stockItem.name}. Disponível: ${Number(balance?.quantity || 0)} ${stockItem.unit || "un"}.`);
       statements.push(...atomicStockChange(db, stockItemId, stockItem, movementType, requiredQuantity, { reason: reason ? `${label}: ${reason}` : label, responsible, reference_id: eventId }));
     }
-    const event = { event_type: input.event_type, responsible, reason: reason || label, beneficiary, employee_shift_id: input.event_type === "staff_consumption" ? input.employee_id : "", items: eventItems, items_count: eventItems.length, units_count: eventItems.reduce((sum, item) => sum + item.quantity, 0), total_cost: Math.round(eventItems.reduce((sum, item) => sum + item.cost, 0) * 100) / 100, revenue_not_realized: Math.round(eventItems.reduce((sum, item) => sum + item.quantity * item.sale_price, 0) * 100) / 100, cash_session_id: origin.cash_session_id || open.id, created_at: createdAt, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" };
+    const event = { event_type: input.event_type, responsible, reason: reason || label, beneficiary, items: eventItems, items_count: eventItems.length, units_count: eventItems.reduce((sum, item) => sum + item.quantity, 0), total_cost: Math.round(eventItems.reduce((sum, item) => sum + item.cost, 0) * 100) / 100, revenue_not_realized: Math.round(eventItems.reduce((sum, item) => sum + item.quantity * item.sale_price, 0) * 100) / 100, cash_session_id: origin.cash_session_id || open.id, created_at: createdAt, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" };
     statements.push(putRecord(db, "stock_events", eventId, event));
     await db.batch(statements);
     return reply({ ok: true, id: eventId, total_cost: event.total_cost });
