@@ -422,6 +422,24 @@ function staffPage(){const employees=entries(data.employees).sort((a,b)=>a[1].gr
 const overviewPageBeforeStaffConsumptionCosts=overviewPage;
 overviewPage=function(){const cashOptions=entries(data.cash).filter(([,cash])=>overviewProject==="all"||(overviewProject==="bagaco_laranja"?cash.project_code==="bagaco_laranja":cash.project_code!=="bagaco_laranja")).sort((a,b)=>(b[1].opened_at||"").localeCompare(a[1].opened_at||"")),current=periodSelection(entries(data.sales).filter(([,sale])=>!sale.voided_at),cashOptions,summaryFilter),staffConsumptionCost=entries(data.stock_events).filter(([,event])=>event.event_type==="staff_consumption"&&!event.cancelled_at&&(event.cash_session_id?current.periodCashIds.has(event.cash_session_id):new Date(event.created_at||0)>=current.start&&new Date(event.created_at||0)<=current.end)).reduce((sum,[,event])=>sum+Number(event.total_cost||0),0),shifts=entries(data.staff_shifts).filter(([,shift])=>shift.status!=="cancelled"&&current.periodCashIds.has(shift.cash_session_id)),staffBaseCost=shifts.reduce((sum,[,shift])=>sum+Number(shift.daily_rate||0),0),eventConsumptionCost=current.sales.filter(([,sale])=>sale.hosted_event_id).reduce((sum,[,sale])=>sum+saleActualCost(sale),0),total=staffBaseCost+eventConsumptionCost+staffConsumptionCost,shell=document.createElement("div");shell.innerHTML=overviewPageBeforeStaffConsumptionCosts();const costGrid=shell.querySelector(".staff-events-metrics .cash-compact-metrics");if(costGrid){const item=document.createElement("div");item.innerHTML=`<span>Consumação dos funcionários</span><b>${money(staffConsumptionCost)}</b><small>Custo real dos produtos</small>`;costGrid.append(item)}for(const root of [shell.querySelector(".staff-events-metrics"),shell.querySelector(".overview-executive-kpis")]){const labels=root?[...root.querySelectorAll("span")]:[],label=labels.find(node=>["Custo total","Custos totais"].includes(node.textContent));const value=label?.parentElement?.querySelector("b");if(value)value.textContent=money(total)}for(const badge of shell.querySelectorAll(".stock-event-record .status"))if(badge.textContent==="Cortesia"&&badge.closest(".stock-event-record")?.textContent.includes("Consumação de funcionário"))badge.textContent="Consumação da equipe";return shell.innerHTML};
 
+// Mantem a primeira leitura da visao geral curta: vendas, caixa e resultado.
+const overviewPageBeforeSimplifiedMetrics=overviewPage;
+overviewPage=function(){
+  const shell=document.createElement("div");
+  shell.innerHTML=overviewPageBeforeSimplifiedMetrics();
+  const executive=shell.querySelector(".overview-executive-kpis"),sales=shell.querySelector(".overview-analysis-grid>.dashboard-card:first-child");
+  if(!executive||!sales)return shell.innerHTML;
+  const numberOf=text=>Number(String(text||"").replace(/[^0-9,-]/g,"").replace(/\./g,"").replace(",","."))||0;
+  const card=label=>[...executive.querySelectorAll("article")].find(item=>item.querySelector("span")?.textContent===label);
+  const detail=label=>[...sales.querySelectorAll(".cash-compact-metrics>div")].find(item=>item.querySelector(":scope>span")?.textContent===label);
+  const revenue=numberOf(card("Faturamento")?.querySelector("b")?.textContent),received=numberOf(card("Valor recebido")?.querySelector("b")?.textContent),result=numberOf(card("Resultado operacional")?.querySelector("b")?.textContent),orders=Number(detail("Pedidos")?.querySelector("b")?.textContent)||0,margin=revenue?result/revenue*100:0;
+  executive.innerHTML=`<article><span>Faturamento</span><b>${money(revenue)}</b><small>Total vendido, incluindo fichas</small></article><article><span>Recebido</span><b>${money(received)}</b><small>Dinheiro que entrou no per&iacute;odo</small></article><article class="featured ${result<0?'overview-kpi-negative':'overview-kpi-positive'}"><span>Resultado operacional</span><b>${money(result)}</b><small>O que sobrou depois de todos os custos</small></article><article><span>Margem operacional</span><b>${margin.toLocaleString("pt-BR",{minimumFractionDigits:1,maximumFractionDigits:1})}%</b><small>Resultado em rela&ccedil;&atilde;o ao faturamento</small></article>`;
+  detail("Resultado operacional")?.remove();
+  const ordersMetric=detail("Pedidos");
+  if(ordersMetric){ordersMetric.innerHTML=`<span>Pedidos</span><b>${orders}</b><small>Vendas finalizadas no per&iacute;odo</small>`;ordersMetric.insertAdjacentHTML("afterend",`<div><span>Ticket m&eacute;dio</span><b>${money(orders?revenue/orders:0)}</b><small>Faturamento m&eacute;dio por pedido</small></div>`)}
+  return shell.innerHTML;
+};
+
 function staffPageSimple(){
   const employees=entries(data.employees).sort((a,b)=>a[1].group.localeCompare(b[1].group)||a[1].name.localeCompare(b[1].name));
   const cashOptions=entries(data.cash).sort((a,b)=>(b[1].opened_at||"").localeCompare(a[1].opened_at||""));
