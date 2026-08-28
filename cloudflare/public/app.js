@@ -71,6 +71,7 @@ function saveCart(){localStorage.setItem("saleCart",JSON.stringify(cart))}
 function scheduleSearchRender(selector,render){clearTimeout(searchRenderTimer);const active=document.activeElement,selection=active?.matches?.(selector)?[active.selectionStart,active.selectionEnd]:null;searchRenderTimer=setTimeout(()=>{render();const input=document.querySelector(selector);if(!input)return;input.focus({preventScroll:true});if(selection&&typeof input.setSelectionRange==="function"){const start=Math.min(selection[0]??input.value.length,input.value.length),end=Math.min(selection[1]??start,input.value.length);input.setSelectionRange(start,end)}},100)}
 function changeCart(id,delta){const current=cart[id]||{},next=Number(current.quantity||0)+delta,state=productStockState(id),available=state.available;if(delta>0&&next>available){toast(state.reason||`Disponível para venda: ${available} unidade(s).`,true);return}if(next>0)cart[id]={...current,quantity:next};else delete cart[id];saveCart();draw()}
 const kitchenViewOpen = () => module==="Cozinha" || module==="Admin"&&page==="kitchen";
+const readyAlertsOpen = () => Boolean(module)&&module!=="Impressora";
 function prepareKitchenAlerts(){
   knownKitchenOrderIds=new Set(Object.keys(data.kitchen||{}));
   const AudioContext=window.AudioContext||window.webkitAudioContext;
@@ -143,7 +144,9 @@ function notificationAction(context="front"){
     if(soundReady&&notificationsReady)return`<button class="notification-enable" disabled>Alertas ativos</button>`;
     return`<button class="notification-enable ${"Notification"in window&&Notification.permission==="denied"?'danger':''}" data-enable-notifications>${"Notification"in window&&Notification.permission==="denied"?'Ativar som · avisos bloqueados':'Ativar alertas da cozinha'}</button>`;
   }
-  if(!("Notification"in window)||Notification.permission==="granted")return"";
+  const soundReady=kitchenAudioContext?.state==="running",notificationsReady=!("Notification"in window)||Notification.permission==="granted";
+  if(soundReady&&notificationsReady)return`<button class="notification-enable" disabled>Alertas ativos</button>`;
+  if(!("Notification"in window))return soundReady?"":`<button class="notification-enable" data-enable-notifications>Ativar som dos alertas</button>`;
   return`<button class="notification-enable ${Notification.permission==="denied"?'danger':''}" data-enable-notifications>${Notification.permission==="denied"?'Notificações bloqueadas':'Ativar notificações'}</button>`;
 }
 
@@ -226,12 +229,13 @@ function draw(){
     app.innerHTML=fiadoLabels(adminShell(content));
     if(page==="summary"&&overviewPeriodOpen)app.querySelector(".overview-period-details")?.setAttribute("open","");
     if(page==="summary"||page==="stock"||page==="cash")refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
-    if(page==="kitchen")refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
+    else if(page==="kitchen")refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
+    else refreshTimer=setInterval(()=>load(false).catch(()=>{}),3000);
     if(page==="adminPrinter"){refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);queueAutomaticPrint()}
   }
 }
 
-function adminShell(content){const groups=[["Operação",[["cash","Controle de caixa"],["summary","Visão geral"],["stock","Estoque"]]],["Cadastros",[["menu","Cardápio"],["accounts","Fiado"],["staff","Equipe, diárias e eventos"],["devices","Dispositivos"]]]];return `<div class="admin-layout"><aside class="admin-sidebar"><div class="admin-identity"><span class="eyebrow">Administração</span><b>Controle da Adega</b></div>${groups.map(([label,items])=>`<div class="admin-nav-group"><small>${label}</small>${items.map(([key,text])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${text}</button>`).join("")}</div>`).join("")}<button class="ghost admin-logout" data-admin-logout>Sair do Admin</button></aside><section class="admin-content">${content}</section></div>`}
+function adminShell(content){const groups=[["Operação",[["cash","Controle de caixa"],["summary","Visão geral"],["stock","Estoque"]]],["Cadastros",[["menu","Cardápio"],["accounts","Fiado"],["staff","Equipe, diárias e eventos"],["devices","Dispositivos"]]]];return `<div class="admin-layout"><aside class="admin-sidebar"><div class="admin-identity"><span class="eyebrow">Administração</span><b>Controle da Adega</b></div><div class="admin-alert-control">${notificationAction()}</div>${groups.map(([label,items])=>`<div class="admin-nav-group"><small>${label}</small>${items.map(([key,text])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${text}</button>`).join("")}</div>`).join("")}<button class="ghost admin-logout" data-admin-logout>Sair do Admin</button></aside><section class="admin-content">${content}</section></div>`}
 
 function saleGroup(item){const name=(item.name||"").toLocaleLowerCase();if(category(item)==="Comidas")return"Porções";if(/cerveja|heineken|skol|brahma|original|budweiser|lata|latão|long neck/.test(name))return"Cervejas";if(/copão|dose|drink|gin|vodka|whisky|whiskey|jack|cavalo/.test(name))return"Drinks";if(/água|agua|coca|guaraná|guarana|gelo|red bull|energético|energetico|zero álcool|zero alcool|refrigerante|suco/.test(name))return"Sem álcool";return"Bebidas"}
 function salesPage(){
@@ -592,7 +596,7 @@ const legacyAccountFormDialog=accountFormDialog,legacyAccountDialog=accountDialo
 const currentTabEntries=()=>{const cash=activeCash();return cash?entries(data.accounts).filter(([,a])=>a.account_type==="tab"&&a.cash_session_id===cash[0]&&a.status!=="closed"):[]};
 const creditEntries=()=>entries(data.accounts).filter(([,a])=>a.account_type!=="tab");
 accountsPage=function(){
-  if(module==="Frente de caixa"){
+  if(readyAlertsOpen()){
     const tabs=currentTabEntries().sort((a,b)=>accountBalance(b[1])-accountBalance(a[1])||a[1].customer_name.localeCompare(b[1].customer_name)),total=tabs.reduce((sum,[,a])=>sum+accountBalance(a),0);
     return heading("Comandas",`<button class="primary" data-new-account ${activeCash()?"":"disabled"}>+ Abrir comanda</button>`)+(!activeCash()?`<div class="notice">Abra o caixa no Admin para criar comandas.</div>`:"")+`<div class="account-summary"><div><span>Total em comandas abertas</span><b>${money(total)}</b></div><div><span>Comandas abertas</span><b>${tabs.length}</b></div></div><div class="account-cards account-cards-simple">${tabs.map(([id,a])=>`<article class="tab-card"><button type="button" class="account-card-simple" data-account="${id}"><span>${esc(a.customer_name)}</span><b>${money(accountBalance(a))}</b></button><button type="button" class="primary tab-add-items" data-tab-add-items="${id}" aria-label="Adicionar itens à comanda ${esc(a.customer_name)}" title="Adicionar itens">+</button></article>`).join("")||empty("Nenhuma comanda aberta neste caixa.")}</div>`;
   }
@@ -643,9 +647,9 @@ document.addEventListener("toggle",event=>{if(event.target.matches?.(".overview-
 
 document.addEventListener("click",async event=>{
   const el=event.target.closest("button");if(!el)return;
-  if(module==="Frente de caixa")prepareFrontAlerts();
+  if(readyAlertsOpen())prepareFrontAlerts();
   try{
-    if(el.dataset.module){module=el.dataset.module;page=null;if(module==="Cozinha")prepareKitchenAlerts();else knownKitchenOrderIds=null;if(module==="Frente de caixa")prepareFrontAlerts();else knownFrontKitchenStatuses=null;draw()}
+    if(el.dataset.module){module=el.dataset.module;page=null;if(module==="Cozinha")prepareKitchenAlerts();else knownKitchenOrderIds=null;if(readyAlertsOpen())prepareFrontAlerts();else knownFrontKitchenStatuses=null;draw()}
     else if(el.dataset.page){page=el.dataset.page;if(kitchenViewOpen())prepareKitchenAlerts();else knownKitchenOrderIds=null;draw()}
     else if(el.hasAttribute("data-admin-logout")){token="";localStorage.removeItem("adminToken");sessionStorage.removeItem("adminToken");module=null;page=null;draw()}
     else if(el.hasAttribute("data-device-logout")){deviceToken="";deviceRole="";localStorage.removeItem("deviceAccessToken");localStorage.removeItem("deviceRole");module=null;page=null;draw()}
@@ -668,7 +672,8 @@ document.addEventListener("click",async event=>{
     else if(el.hasAttribute("data-new-order")){closeModal();draw()}
     else if(el.hasAttribute("data-enable-notifications")){
       const kitchenAlerts=kitchenViewOpen();
-      if(kitchenAlerts)prepareKitchenAlerts();else prepareFrontAlerts();
+      if(kitchenAlerts)prepareKitchenAlerts();
+      prepareFrontAlerts();
       let permission="Notification"in window?Notification.permission:"unsupported";
       if(permission==="default")permission=await Notification.requestPermission();
       if(kitchenAlerts){playKitchenAlert();toast(permission==="granted"?"Alertas da cozinha ativados. Este é o som de teste.":"Som ativado. As notificações do Windows estão bloqueadas.",permission==="denied");draw();return}
