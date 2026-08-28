@@ -837,6 +837,7 @@ async function mutate(request, env) {
     const eventCashSessionId = existing?.cash_session_id || open?.id;
     if (existing && allowance + 0.001 < Number(existing.used_amount || 0)) throw new Error("O limite não pode ser menor que a consumação já utilizada.");
     const statements = [];
+    let eventAccountId = existing?.account_id || "";
     let feeShiftId = existing?.fee_shift_id || "";
     let feeAmount = Number(input.fee_amount || 0);
     if (eventMode === "contracted") {
@@ -850,15 +851,29 @@ async function mutate(request, env) {
       if (!shift.created_at) shift.created_at = now();
       statements.push(putRecord(db, "staff_shifts", feeShiftId, shift));
     } else feeAmount = 0;
-    const hostedEvent = { ...(existing || {}), event_mode: eventMode, name: input.name.trim(), organizer: "", attraction_type: "", fee_amount: feeAmount, fee_shift_id: feeShiftId, allowance, starts_at: "", ends_at: "", cash_session_id: eventCashSessionId, allow_overage: eventMode === "hosted" && input.allow_overage === true, note: (input.note || "").trim(), status: existing?.status || "open", used_amount: Number(existing?.used_amount || 0), orders: existing?.orders || [] };
+    if (allowance > 0) {
+      eventAccountId ||= uid();
+      const currentAccount = await readRecord(db, "accounts", eventAccountId);
+      const eventAccount = { ...(currentAccount || {}), account_type: "tab", customer_name: `Evento · ${input.name.trim()}`, note: "Comanda automática de consumação", opening_balance: 0, cash_session_id: eventCashSessionId, status: "open", items: currentAccount?.items || [], payments_total: 0, hosted_event_id: id, event_consumption: true, consumption_limit: allowance, created_at: currentAccount?.created_at || now(), updated_at: now() };
+      statements.push(putRecord(db, "accounts", eventAccountId, eventAccount));
+    }
+    const hostedEvent = { ...(existing || {}), event_mode: eventMode, name: input.name.trim(), organizer: "", attraction_type: "", fee_amount: feeAmount, fee_shift_id: feeShiftId, allowance, starts_at: "", ends_at: "", cash_session_id: eventCashSessionId, account_id: eventAccountId, allow_overage: false, note: (input.note || "").trim(), status: existing?.status || "open", used_amount: Number(existing?.used_amount || 0), orders: existing?.orders || [] };
     hostedEvent[existing ? "updated_at" : "created_at"] = now();
     statements.push(putRecord(db, "hosted_events", id, hostedEvent));
     await db.batch(statements);
   } else if (action === "hosted.event.close") {
     const hostedEvent = await readRecord(db, "hosted_events", id);
     if (!hostedEvent || hostedEvent.status === "closed") throw new Error("Evento não encontrado ou já encerrado.");
-    hostedEvent.status = "closed"; hostedEvent.closed_at = now(); hostedEvent.closed_by = (input.responsible || "Admin").trim();
-    await putRecord(db, "hosted_events", id, hostedEvent).run();
+    required(input.responsible, "o responsável pela confirmação");
+    if (input.confirmed !== true) throw new Error("Confirme a conferência da comanda e do custo do evento.");
+    const closedAt = now(), statements = [];
+    hostedEvent.status = "closed"; hostedEvent.closed_at = closedAt; hostedEvent.closed_by = input.responsible.trim(); hostedEvent.cost_applied_at = closedAt; hostedEvent.cost_applied_amount = Number(hostedEvent.actual_cost || 0);
+    statements.push(putRecord(db, "hosted_events", id, hostedEvent));
+    if (hostedEvent.account_id) {
+      const eventAccount = await readRecord(db, "accounts", hostedEvent.account_id);
+      if (eventAccount) { eventAccount.status = "closed"; eventAccount.closed_at = closedAt; eventAccount.closed_by = input.responsible.trim(); statements.push(putRecord(db, "accounts", hostedEvent.account_id, eventAccount)); }
+    }
+    await db.batch(statements);
   } else if (action === "sale.checkout") {
     if (!admin && (input.destination === "account" || input.to_account === true)) throw new Error("O fiado está disponível somente no Admin. Use uma comanda.");
     const items = await cartItems(db, input.items);
@@ -900,7 +915,7 @@ async function mutate(request, env) {
       const remaining = Math.max(0, Number(hostedEvent.allowance || 0) - Number(hostedEvent.used_amount || 0));
       const covered = Math.min(orderTotal, remaining);
       const overage = Math.max(0, orderTotal - covered);
-      if (overage > 0.001 && !hostedEvent.allow_overage) throw new Error(`O saldo do evento é ${remaining.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}. O excedente não está autorizado.`);
+      if (overage > 0.001) throw new Error(`Limite da comanda atingido. Saldo disponível: ${remaining.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}.`);
       let paymentMethod = "Consumação de evento";
       if (overage > 0.001) {
         required(input.payment_method, "a forma de pagamento do excedente"); paymentMethod = input.payment_method;
@@ -916,6 +931,14 @@ async function mutate(request, env) {
       hostedEvent.actual_cost = Number(hostedEvent.actual_cost || 0) + actualCost;
       hostedEvent.orders = [...(hostedEvent.orders || []), { id: orderId, items: items.map(item => ({ menu_id: item.menu_id, description: item.description, quantity: item.quantity, unit_price: item.price, note: item.note })), order_total: orderTotal, covered_amount: covered, overage_amount: overage, actual_cost: actualCost, payment_method: paymentMethod, created_at: createdAt, created_by: origin.source_name }];
       statements.push(putRecord(db, "hosted_events", input.event_id, hostedEvent));
+      if (hostedEvent.account_id) {
+        if (input.account_id && input.account_id !== hostedEvent.account_id) throw new Error("A comanda não pertence a este evento.");
+        const eventAccount = await readRecord(db, "accounts", hostedEvent.account_id);
+        if (!eventAccount || eventAccount.status === "closed") throw new Error("A comanda de consumação está fechada.");
+        const eventEntries = items.map(item => ({ id: uid(), menu_id: item.menu_id, item_category: item.category, description: item.description, quantity: item.quantity, price: item.price, cost: item.stock_usage.length ? item.stock_usage.reduce((sum,usage)=>sum+Number(usage.quantity||0)*Number(usage.unit_cost||0),0) : Number(item.menu_item.cost_price||0), note: item.note, created_at: createdAt, order_id: orderId, cash_session_id: cashSessionId, created_by: origin.source_name }));
+        eventAccount.items = [...(eventAccount.items || []), ...eventEntries]; eventAccount.updated_at = createdAt;
+        statements.push(putRecord(db, "accounts", hostedEvent.account_id, eventAccount));
+      }
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: hostedEvent.name, note, origin: "Consumação de evento", payment_method: paymentMethod, created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
     } else {
       required(input.payment_method, "a forma de pagamento");
@@ -969,7 +992,7 @@ async function mutate(request, env) {
     if (hostedEventId) {
       const hostedEvent = await readRecord(db, "hosted_events", hostedEventId);
       const eventOrder = hostedEvent?.orders?.find(order => order.id === input.order_id && !order.cancelled_at);
-      if (eventOrder) { hostedEvent.used_amount = Math.max(0, Number(hostedEvent.used_amount || 0) - Number(eventOrder.covered_amount || 0)); hostedEvent.actual_cost = Math.max(0, Number(hostedEvent.actual_cost || 0) - Number(eventOrder.actual_cost || 0)); eventOrder.cancelled_at = now(); eventOrder.cancelled_by = responsible; eventOrder.cancel_reason = reason; statements.push(putRecord(db, "hosted_events", hostedEventId, hostedEvent)); }
+      if (eventOrder) { hostedEvent.used_amount = Math.max(0, Number(hostedEvent.used_amount || 0) - Number(eventOrder.covered_amount || 0)); hostedEvent.actual_cost = Math.max(0, Number(hostedEvent.actual_cost || 0) - Number(eventOrder.actual_cost || 0)); eventOrder.cancelled_at = now(); eventOrder.cancelled_by = responsible; eventOrder.cancel_reason = reason; statements.push(putRecord(db, "hosted_events", hostedEventId, hostedEvent)); if(hostedEvent.account_id){const eventAccount=await readRecord(db,"accounts",hostedEvent.account_id);if(eventAccount){for(const item of eventAccount.items||[])if(item.order_id===input.order_id&&!item.cancelled_at){item.cancelled_at=now();item.cancelled_by=responsible;item.cancel_reason=reason}statements.push(putRecord(db,"accounts",hostedEvent.account_id,eventAccount))}} }
     }
     for (const [saleId,sale] of sales) statements.push(...await voidSaleStatements(db, saleId, sale, responsible, reason));
     const kitchen = await readRecord(db, "kitchen", input.order_id);
@@ -1056,6 +1079,9 @@ async function mutate(request, env) {
     const kitchenOpen = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='kitchen' AND COALESCE(json_extract(data,'$.status'),'pending') NOT IN ('delivered','done','cancelled')").first();
     const kitchenOpenCount = Number(kitchenOpen?.total || 0);
     if (kitchenOpenCount) throw new Error(`Não é possível fechar o caixa: ${kitchenOpenCount} pedido${kitchenOpenCount === 1 ? "" : "s"} ainda ${kitchenOpenCount === 1 ? "está" : "estão"} em andamento na cozinha.`);
+    const pendingEvents = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='hosted_events' AND json_extract(data,'$.cash_session_id')=? AND (COALESCE(json_extract(data,'$.status'),'open')!='closed' OR json_extract(data,'$.cost_applied_at') IS NULL)").bind(id).first();
+    const pendingEventCount = Number(pendingEvents?.total || 0);
+    if (pendingEventCount) throw new Error(`Não é possível fechar o caixa: ${pendingEventCount} comanda${pendingEventCount === 1 ? " de evento precisa" : "s de evento precisam"} ser confirmada${pendingEventCount === 1 ? "" : "s"} e ter o custo aplicado.`);
     const openTabs = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='accounts' AND json_extract(data,'$.account_type')='tab' AND json_extract(data,'$.cash_session_id')=? AND COALESCE(json_extract(data,'$.status'),'open')='open'").bind(id).first();
     const openTabCount = Number(openTabs?.total || 0);
     if (openTabCount) throw new Error(`Não é possível fechar o caixa: ${openTabCount} comanda${openTabCount === 1 ? " está" : "s estão"} aberta${openTabCount === 1 ? "" : "s"}. Quite ou transfira ${openTabCount === 1 ? "a comanda" : "as comandas"} para o fiado antes de continuar.`);
@@ -1096,18 +1122,12 @@ async function mutate(request, env) {
     }
     cash.items = [...grouped.values()].sort((a, b) => a.description.localeCompare(b.description));
     const accessRows = await db.prepare("SELECT id,data FROM records WHERE kind='staff_access' AND json_extract(data,'$.cash_session_id')=? AND json_extract(data,'$.revoked_at') IS NULL").bind(id).all();
-    const eventRows = await db.prepare("SELECT id,data FROM records WHERE kind='hosted_events' AND json_extract(data,'$.cash_session_id')=? AND COALESCE(json_extract(data,'$.status'),'open')='open'").bind(id).all();
     const statements = [putRecord(db, "cash", id, cash)];
     for (const row of accessRows.results) {
       const access = JSON.parse(row.data);
       access.revoked_at = now();
       access.revoked_reason = "cash_closed";
       statements.push(putRecord(db, "staff_access", row.id, access));
-    }
-    for (const row of eventRows.results) {
-      const hostedEvent = JSON.parse(row.data);
-      hostedEvent.status = "closed"; hostedEvent.closed_at = cash.closed_at; hostedEvent.closed_by = cash.closed_by; hostedEvent.closed_reason = "cash_closed";
-      statements.push(putRecord(db, "hosted_events", row.id, hostedEvent));
     }
     await db.batch(statements);
   } else throw new Error("Ação desconhecida.");
