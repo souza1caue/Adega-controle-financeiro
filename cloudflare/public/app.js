@@ -100,6 +100,14 @@ function playKitchenAlert(){
     });
   });
 }
+function notifyKitchenOrder(id,order){
+  playKitchenAlert();
+  const customer=order.customer_name||"Cliente não informado",items=orderItems(order).reduce((sum,item)=>sum+Number(item.quantity||0),0),message=`${items} ${items===1?'item':'itens'} · ${customer}`;
+  toast(`Novo pedido na cozinha: ${customer}`);
+  if("Notification"in window&&Notification.permission==="granted"){
+    try{new Notification("Novo pedido na cozinha",{body:message,tag:`kitchen-${id}`,renotify:true,requireInteraction:true})}catch{}
+  }
+}
 function prepareFrontAlerts(){
   if(!knownFrontKitchenStatuses)knownFrontKitchenStatuses=new Map(entries(data.kitchen).map(([id,order])=>[id,order.status||"pending"]));
   const AudioContext=window.AudioContext||window.webkitAudioContext;
@@ -129,7 +137,12 @@ function notifyReadyOrder(id,order){
     try{new Notification("Pedido pronto para entrega",{body:message,tag:`ready-${id}`,renotify:true})}catch{}
   }
 }
-function notificationAction(){
+function notificationAction(context="front"){
+  if(context==="kitchen"){
+    const soundReady=kitchenAudioContext?.state==="running",notificationsReady=!(("Notification"in window))||Notification.permission==="granted";
+    if(soundReady&&notificationsReady)return`<button class="notification-enable" disabled>Alertas ativos</button>`;
+    return`<button class="notification-enable ${"Notification"in window&&Notification.permission==="denied"?'danger':''}" data-enable-notifications>${"Notification"in window&&Notification.permission==="denied"?'Ativar som · avisos bloqueados':'Ativar alertas da cozinha'}</button>`;
+  }
   if(!("Notification"in window)||Notification.permission==="granted")return"";
   return`<button class="notification-enable ${Notification.permission==="denied"?'danger':''}" data-enable-notifications>${Notification.permission==="denied"?'Notificações bloqueadas':'Ativar notificações'}</button>`;
 }
@@ -145,7 +158,7 @@ async function load(render=true){
   for(const account of Object.values(nextData.accounts||{}))delete account.blocked;
   if(kitchenViewOpen()){
     const nextIds=new Set(Object.keys(nextData.kitchen||{}));
-    if(knownKitchenOrderIds&&[...nextIds].some(id=>!knownKitchenOrderIds.has(id)))playKitchenAlert();
+    if(knownKitchenOrderIds)for(const id of nextIds)if(!knownKitchenOrderIds.has(id))notifyKitchenOrder(id,nextData.kitchen[id]);
     knownKitchenOrderIds=nextIds;
   }
   if(module==="Frente de caixa"){
@@ -284,7 +297,7 @@ function updateAccountPaymentChange(form){if(!form)return;const field=form.query
 function cancelAccountItemDialog(id,itemId,index){const a=data.accounts[id],item=(a?.items||[]).find((entry,i)=>entry.id?entry.id===itemId:i===Number(index));if(!item)return;openModal(`<h2>Cancelar consumo</h2><p class="notice">O consumo será preservado no histórico e deixará de compor o saldo da caderneta.</p><p><b>${esc(item.description)}</b> · ${money(Number(item.quantity)*Number(item.price))}</p><form data-form="account-cancel-item"><input type="hidden" name="id" value="${id}"><input type="hidden" name="item_id" value="${esc(itemId)}"><input type="hidden" name="index" value="${index}"><div class="field"><label>Responsável</label><input name="responsible" required autofocus></div><div class="field"><label>Motivo do cancelamento</label><textarea name="reason" required></textarea></div><button class="danger checkout-button" type="submit">Confirmar cancelamento</button></form>`)}
 
 function kitchenRows(statuses,controls=true){const list=entries(data.kitchen).filter(([,o])=>statuses.includes(o.status||"pending")).sort((a,b)=>(a[1].created_at||"").localeCompare(b[1].created_at||""));return list.map(([id,o])=>{const items=orderItems(o),itemList=items.map(item=>`<div class="kitchen-order-item"><b>${Number(item.quantity)}x ${esc(item.description)}</b>${item.note?`<p class="kitchen-order-note"><span>OBSERVA&Ccedil;&Atilde;O</span>${esc(item.note)}</p>`:""}</div>`).join("");const status=o.status||"pending";return`<div class="row kitchen-order-card"><div><div class="kitchen-order-items">${itemList||`<div class="kitchen-order-item"><b>${esc(o.description)}</b></div>`}</div>${o.note?`<p class="kitchen-order-note general"><span>OBSERVA&Ccedil;&Atilde;O GERAL</span>${esc(o.note)}</p>`:""}<div class="kitchen-order-meta">${esc(o.customer_name||"Sem cliente")} · ${esc(o.origin||"Balcão")}</div></div><span class="status ${status}">${statusName[status]}</span><span>${date(o.created_at)}</span>${controls?`<div class="actions">${status==="pending"?`<button data-kitchen="${id}" data-status="started">Iniciar</button>`:""}${status==="started"?`<button class="primary" data-kitchen="${id}" data-status="ready">Finalizar</button>`:""}${status==="ready"?`<button class="primary" data-kitchen="${id}" data-status="delivered">Confirmar entrega</button>`:""}</div>`:""}</div>`}).join("")||empty("Nenhum pedido nesta etapa.")}
-function kitchenPage(){return heading("Cozinha")+`<div class="kitchen-board"><section class="kitchen-column pending"><header><span class="eyebrow">Aguardando</span><h2>Pendentes</h2></header><div class="list">${kitchenRows(["pending"])}</div></section><section class="kitchen-column started"><header><span class="eyebrow">Produção</span><h2>Em preparo</h2></header><div class="list">${kitchenRows(["started"])}</div></section><section class="kitchen-column ready"><header><span class="eyebrow">Finalizado</span><h2>Prontos</h2><small>Aguardando retirada</small></header><div class="list">${kitchenRows(["ready"],false)}</div></section></div><details class="kitchen-history" ${kitchenHistoryOpen?'open':''}><summary>Histórico de entregas</summary><div class="list">${kitchenRows(["delivered","done"],false)}</div></details>`}
+function kitchenPage(){return heading("Cozinha",notificationAction("kitchen"))+`<div class="kitchen-alert-hint"><b>Alertas de novos pedidos</b><span>Mantenha esta tela aberta e clique em “Ativar alertas da cozinha” uma vez neste computador.</span></div><div class="kitchen-board"><section class="kitchen-column pending"><header><span class="eyebrow">Aguardando</span><h2>Pendentes</h2></header><div class="list">${kitchenRows(["pending"])}</div></section><section class="kitchen-column started"><header><span class="eyebrow">Produção</span><h2>Em preparo</h2></header><div class="list">${kitchenRows(["started"])}</div></section><section class="kitchen-column ready"><header><span class="eyebrow">Finalizado</span><h2>Prontos</h2><small>Aguardando retirada</small></header><div class="list">${kitchenRows(["ready"],false)}</div></section></div><details class="kitchen-history" ${kitchenHistoryOpen?'open':''}><summary>Histórico de entregas</summary><div class="list">${kitchenRows(["delivered","done"],false)}</div></details>`}
 function orderWait(order){const created=new Date(order.created_at).getTime();return Number.isFinite(created)?Math.max(0,Math.floor((Date.now()-created)/60000)):0}
 function frontKitchenCard(id,order){const status=order.status||"pending",delivered=["delivered","done"].includes(status),wait=orderWait(order),urgency=delivered?"normal":wait>=30?"late":wait>=15?"warning":"normal",items=orderItems(order),count=items.reduce((sum,item)=>sum+Number(item.quantity||0),0),content=`<div class="front-order-items">${items.map(item=>`<div><b>${Number(item.quantity)}x ${esc(item.description)}</b>${item.note?`<small>${esc(item.note)}</small>`:""}</div>`).join("")}${order.note?`<p class="front-order-note">${esc(order.note)}</p>`:""}</div>`,audit=`<small class="order-audit">Pedido por: ${esc(order.created_by||"Caixa principal")}${order.delivered_by?` · Entregue por: ${esc(order.delivered_by)}`:""}</small>`,timing=delivered?`Entregue às ${time(order.delivered_at)}`:`${wait} min`;return`<article class="front-order-card ${urgency}"><div class="front-order-head"><div><span class="eyebrow">#${esc(id.slice(0,6).toUpperCase())} · ${count} ${count===1?'item':'itens'}</span><h3>${esc(order.customer_name||"Cliente não informado")}</h3></div><div><span class="status ${status}">${statusName[status]}</span><b>${timing}</b></div></div>${audit}${content}${status==="ready"?`<button class="primary front-deliver" data-kitchen="${id}" data-status="delivered">Confirmar entrega</button>`:""}</article>`}
 function frontKitchenPage(){const today=new Date().toISOString().slice(0,10),active=entries(data.kitchen).filter(([,o])=>!["delivered","done"].includes(o.status||"pending")).sort((a,b)=>(a[1].created_at||"").localeCompare(b[1].created_at||"")),ready=active.filter(([,o])=>(o.status||"pending")==="ready"),preparing=active.filter(([,o])=>["pending","started"].includes(o.status||"pending")),shown=frontKitchenFilter==="preparing"?preparing:ready,history=entries(data.kitchen).filter(([,o])=>["delivered","done"].includes(o.status)&&String(o.delivered_at||o.created_at||"").slice(0,10)===today).sort((a,b)=>(b[1].delivered_at||b[1].created_at||"").localeCompare(a[1].delivered_at||a[1].created_at||"")).slice(0,10);return heading("Pedidos da cozinha")+`<div class="front-kitchen-summary"><button type="button" data-front-kitchen-filter="ready" class="${frontKitchenFilter==="ready"&&"active"}" aria-pressed="${frontKitchenFilter==="ready"}"><span>Prontos</span><b>${ready.length}</b></button><button type="button" data-front-kitchen-filter="preparing" class="${frontKitchenFilter==="preparing"&&"active"}" aria-pressed="${frontKitchenFilter==="preparing"}"><span>Em preparo</span><b>${preparing.length}</b></button></div><div class="front-order-list">${shown.map(([id,o])=>frontKitchenCard(id,o)).join("")||empty(frontKitchenFilter==="ready"?"Nenhum pedido pronto para entrega.":"Nenhum pedido nesta etapa.")}</div><details class="front-kitchen-history" ${frontKitchenHistoryOpen?'open':''}><summary>Histórico de entregas de hoje</summary><div class="list">${history.map(([id,o])=>frontKitchenCard(id,o)).join("")||empty("Nenhuma entrega registrada hoje.")}</div></details>`}
@@ -654,9 +667,12 @@ document.addEventListener("click",async event=>{
     else if(el.hasAttribute("data-stock-event")){stockEventDialog();const reason=modalBody.querySelector("[data-form='stock-event'] [name='reason']");if(reason){reason.required=false;const label=reason.closest(".field")?.querySelector("label");if(label)label.textContent="Comentário (opcional)"}}
     else if(el.hasAttribute("data-new-order")){closeModal();draw()}
     else if(el.hasAttribute("data-enable-notifications")){
-      prepareFrontAlerts();
-      if(Notification.permission==="denied"){toast("Permita as notificações nas configurações do navegador.",true);return}
-      const permission=await Notification.requestPermission();
+      const kitchenAlerts=kitchenViewOpen();
+      if(kitchenAlerts)prepareKitchenAlerts();else prepareFrontAlerts();
+      let permission="Notification"in window?Notification.permission:"unsupported";
+      if(permission==="default")permission=await Notification.requestPermission();
+      if(kitchenAlerts){playKitchenAlert();toast(permission==="granted"?"Alertas da cozinha ativados. Este é o som de teste.":"Som ativado. As notificações do Windows estão bloqueadas.",permission==="denied");draw();return}
+      if(permission==="denied"){toast("Permita as notificações nas configurações do navegador.",true);return}
       if(permission==="granted"){toast("Notificações de pedidos prontos ativadas.");draw()}else toast("As notificações não foram autorizadas.",true);
     }
     else if(el.hasAttribute("data-new-account"))accountFormDialog();
