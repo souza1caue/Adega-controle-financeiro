@@ -1,4 +1,6 @@
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
+// Operational flag, also exposed to the UI through /api/state.
+const ALLOW_SALES_WITHOUT_STOCK = true;
 const KINDS = ["menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_movements", "stock_items", "recipes", "inventories", "employees", "staff_shifts", "device_access", "stock_events", "hosted_events"];
 
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
@@ -26,6 +28,7 @@ function putRecord(db, kind, id, data) {
 async function state(db) {
   const rows = await db.prepare("SELECT kind,id,data FROM records ORDER BY created_at").all();
   const result = Object.fromEntries(KINDS.map((kind) => [kind, {}]));
+  result.stock_policy = { allow_sales_without_stock: ALLOW_SALES_WITHOUT_STOCK };
   for (const row of rows.results) if (result[row.kind]) result[row.kind][row.id] = JSON.parse(row.data);
   const balances = await db.prepare("SELECT id,quantity,updated_at FROM stock_balances").all();
   for (const balance of balances.results) if (result.stock_items[balance.id]) {
@@ -195,7 +198,8 @@ async function voidSaleStatements(db, id, sale, responsible, reason) {
   } else if (sale.menu_id && !sale.stock_restored_at) {
     const product = await readRecord(db, "menu", sale.menu_id);
     if (product?.stock_controlled) {
-      statements.push(putRecord(db, "menu", sale.menu_id, product), stockMovement(db, sale.menu_id, product, "return", sale.quantity, { reason: `Cancelamento de pedido: ${reason}`, responsible, reference_id: sale.order_id || id, legacy_menu: true }));
+      const movement = stockMovement(db, sale.menu_id, product, "return", sale.quantity, { reason: `Cancelamento de pedido: ${reason}`, responsible, reference_id: sale.order_id || id, legacy_menu: true });
+      statements.push(putRecord(db, "menu", sale.menu_id, product), movement);
       sale.stock_restored_at = now();
     }
   }
@@ -208,12 +212,13 @@ function stockMovement(db, menuId, product, type, quantityValue, details = {}) {
   const before = Number(product.stock_quantity || 0);
   const signed = ["sale", "loss", "out", "courtesy", "staff_consumption"].includes(type) ? -movementQuantity : movementQuantity;
   const after = Math.round((before + signed) * 1000) / 1000;
-  if (after < 0) throw new Error(`Estoque insuficiente para ${product.name}. Disponível: ${before}.`);
+  if (signed < 0 && after < 0 && !(type === "sale" && ALLOW_SALES_WITHOUT_STOCK)) throw new Error(`Estoque insuficiente para ${product.name}. Disponível: ${before}.`);
   product.stock_quantity = after;
   product.stock_updated_at = now();
   return putRecord(db, "stock_movements", uid(), {
     menu_id: details.legacy_menu ? menuId : "", stock_item_id: details.legacy_menu ? "" : menuId, product_name: product.name, type, quantity: movementQuantity,
     signed_quantity: signed, balance_before: before, balance_after: after,
+    stock_shortage: type === "sale" && after < 0,
     unit_cost: Number(details.unit_cost ?? product.cost_price ?? 0),
     reason: (details.reason || "").trim(), responsible: (details.responsible || "").trim(),
     reference_id: details.reference_id || "", created_at: now(),
@@ -224,17 +229,28 @@ function atomicStockChange(db, stockItemId, product, type, quantityValue, detail
   const movementQuantity = stockNumber(quantityValue, "a quantidade da movimentação", false);
   const signed = ["sale", "loss", "out", "courtesy", "staff_consumption"].includes(type) ? -movementQuantity : movementQuantity;
   const movementId = uid();
-  const update = db.prepare("UPDATE stock_balances SET quantity=quantity+?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(signed, stockItemId);
+  // Entries/returns may leave a negative balance. Other withdrawals remain guarded.
+  const allowNegative = signed >= 0 || (type === "sale" && ALLOW_SALES_WITHOUT_STOCK);
+  const update = db.prepare(`UPDATE stock_balances SET quantity=CASE
+    WHEN ? OR quantity+? >= 0 THEN quantity+? ELSE NULL END,
+    updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(allowNegative ? 1 : 0, signed, signed, stockItemId);
   const movement = db.prepare(`INSERT INTO records(kind,id,data,updated_at)
     SELECT 'stock_movements',?,json_object(
       'stock_item_id',?,'product_name',?,'type',?,'quantity',?,'signed_quantity',?,
-      'balance_before',quantity-?,'balance_after',quantity,'unit_cost',?,
+      'balance_before',quantity-?,'balance_after',quantity,'stock_shortage',CASE WHEN ?='sale' AND quantity<0 THEN 1 ELSE 0 END,'unit_cost',?,
       'reason',?,'responsible',?,'reference_id',?,'created_at',?
     ),CURRENT_TIMESTAMP FROM stock_balances WHERE id=?`)
     .bind(movementId, stockItemId, product.name, type, movementQuantity, signed, signed,
-      Number(details.unit_cost || product.cost_price || 0), (details.reason || "").trim(),
+      type, Number(details.unit_cost ?? product.cost_price ?? 0), (details.reason || "").trim(),
       (details.responsible || "").trim(), details.reference_id || "", now(), stockItemId);
   return [update, movement];
+}
+
+function averageStockCost(balance, currentCost, added, entryCost) {
+  // A negative balance is a pending entry, not inventory with negative value.
+  const held = Math.max(0, Number(balance || 0));
+  if (held === 0) return entryCost;
+  return Math.round((held * Number(currentCost || 0) + added * entryCost) / (held + added) * 100) / 100;
 }
 
 function accountBalance(account) {
@@ -272,7 +288,7 @@ async function cartItems(db, inputItems) {
 async function mutate(request, env) {
   const input = await request.json();
   const action = input.action;
-  const adminActions = new Set(["menu.save", "menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "stock.purchase.batch", "stock.invoice.import", "stock.event.cancel", "hosted.event.save", "hosted.event.close", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "event.save", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
+  const adminActions = new Set(["menu.save", "menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "stock.purchase.batch", "stock.quick.create", "stock.invoice.import", "stock.event.cancel", "hosted.event.save", "hosted.event.close", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "event.save", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
   const admin = await isAdmin(request, env);
   const db = env.DB;
   const staffToken = request.headers.get("x-staff-access") || "";
@@ -432,13 +448,26 @@ async function mutate(request, env) {
     const linked = await db.prepare("SELECT id FROM records WHERE kind='recipes' AND EXISTS (SELECT 1 FROM json_each(json_extract(data,'$.components')) WHERE json_extract(value,'$.stock_item_id')=?) LIMIT 1").bind(id).first();
     if (linked) throw new Error("Este insumo está vinculado a uma ficha técnica. Remova o vínculo antes de excluí-lo.");
     await db.prepare("DELETE FROM records WHERE kind='stock_items' AND id=?").bind(id).run();
-  } else if (action === "stock.purchase.batch") {
+  } else if (action === "stock.purchase.batch" || action === "stock.quick.create") {
+    const quickCreate = action === "stock.quick.create";
     required(input.responsible, "o responsável");
     const lines = Array.isArray(input.items) ? input.items : [];
     if (!lines.length || lines.length > 50) throw new Error("A compra deve ter entre 1 e 50 produtos.");
     const statements = [], usedIds = new Set(), purchaseId = uid();
+    const normalizeName = name => String(name || "").trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
+    const existing = quickCreate ? await db.prepare("SELECT data FROM records WHERE kind='stock_items'").all() : { results: [] };
+    const usedNames = new Set(existing.results.map(row => normalizeName(JSON.parse(row.data).name)));
     let created = 0, totalUnits = 0, totalCost = 0;
     for (const [index, line] of lines.entries()) {
+      if (quickCreate) {
+        if (line.id) throw new Error("Use Registrar compra para adicionar saldo a um item existente.");
+        required(line.name, `o nome do produto ${index + 1}`);
+        const key = normalizeName(line.name);
+        if (usedNames.has(key)) throw new Error(`${line.name.trim()} já está cadastrado ou repetido na lista. Use Registrar compra para adicionar saldo.`);
+        usedNames.add(key);
+        line.purchase_unit = "direct";
+        line.units_per_package = 1;
+      }
       const itemId = line.id || uid();
       if (usedIds.has(itemId)) throw new Error("O mesmo produto foi adicionado mais de uma vez. Edite a linha existente.");
       usedIds.add(itemId);
@@ -449,7 +478,7 @@ async function mutate(request, env) {
         item = { name: line.name.trim(), stock_category: ["Comida", "Bebida", "Descartável"].includes(line.stock_category) ? line.stock_category : "Bebida", unit: (line.unit || "un").trim(), package_size: null, package_measure: "", portion_size: null, portion_measure: "", stock_minimum: stockNumber(line.stock_minimum || 0, `o estoque mínimo de ${line.name}`), cost_price: 0, sku: "", barcode: "", supplier: "", stock_quantity: 0, created_at: now() };
         created += 1;
       }
-      const packageQuantity = stockNumber(line.package_quantity, `a quantidade de embalagens do produto ${item.name}`, false);
+      const packageQuantity = stockNumber(line.package_quantity, `a quantidade de embalagens do produto ${item.name}`, quickCreate);
       const unitsPerPackage = Number(line.units_per_package);
       if (!Number.isInteger(unitsPerPackage) || unitsPerPackage <= 0) throw new Error(`Informe as unidades por embalagem de ${item.name}.`);
       const stockUnit = item.unit || "un";
@@ -473,12 +502,12 @@ async function mutate(request, env) {
       if (bulkPackage) { item.package_size = Number(line.content_per_unit); item.package_measure = contentUnit; }
       item.updated_at = now();
       if (entryCost != null) {
-        item.cost_price = Math.round(((current * Number(item.cost_price || 0) + movementQuantity * entryCost) / (current + movementQuantity)) * 100) / 100;
+        item.cost_price = averageStockCost(current, item.cost_price, movementQuantity, entryCost);
         item.last_cost_price = entryCost;
       }
       statements.push(putRecord(db, "stock_items", itemId, item));
       if (!line.id) statements.push(db.prepare("INSERT INTO stock_balances(id,quantity) VALUES(?,0)").bind(itemId));
-      statements.push(...atomicStockChange(db, itemId, item, "in", movementQuantity, { unit_cost: entryCost ?? item.cost_price, responsible: input.responsible, reason: (input.note || "Compra em lote").trim(), reference_id: purchaseId }));
+      if (movementQuantity > 0) statements.push(...atomicStockChange(db, itemId, item, "in", movementQuantity, { unit_cost: entryCost ?? item.cost_price, responsible: input.responsible, reason: (input.note || "Compra em lote").trim(), reference_id: purchaseId }));
       totalUnits += movementQuantity;
       totalCost += purchaseTotal;
     }
@@ -501,7 +530,7 @@ async function mutate(request, env) {
     if (input.type === "in" && input.units_per_package != null && input.units_per_package !== "") { const units = Number(input.units_per_package); if (!Number.isInteger(units) || units <= 0) throw new Error("As unidades por embalagem devem ser um número inteiro maior que zero."); item.units_per_package = units; }
     if (input.type === "in" && input.unit_cost !== "" && input.unit_cost != null) {
       const entryCost = amount(input.unit_cost, "o custo");
-      item.cost_price = Math.round(((current * Number(item.cost_price || 0) + Number(movementQty) * entryCost) / (current + Number(movementQty))) * 100) / 100;
+      item.cost_price = averageStockCost(current, item.cost_price, Number(movementQty), entryCost);
       item.last_cost_price = entryCost;
     }
     const atomic = atomicStockChange(db, id, item, movementType, movementQty, input);
@@ -529,7 +558,7 @@ async function mutate(request, env) {
       const match = (barcode && byBarcode.get(barcode)) || (sku && bySku.get(sku)) || byName.get(nameKey);
       const stockItemId = match?.id || uid(), current = balances.get(stockItemId) || 0;
       const item = { ...(match?.item || {}), name: match?.item.name || String(source.name).trim(), unit: String(source.unit || match?.item.unit || "un").trim(), stock_minimum: Number(match?.item.stock_minimum || 0), sku: sku || match?.item.sku || "", barcode: barcode || match?.item.barcode || "", supplier: String(input.supplier || match?.item.supplier || "").trim(), updated_at: now() };
-      item.cost_price = Math.round(((current * Number(match?.item.cost_price || 0) + qty * entryCost) / (current + qty)) * 100) / 100;
+      item.cost_price = averageStockCost(current, match?.item.cost_price, qty, entryCost);
       item.last_cost_price = entryCost;
       if (!item.created_at) item.created_at = now();
       statements.push(putRecord(db, "stock_items", stockItemId, item));
@@ -960,11 +989,11 @@ async function mutate(request, env) {
       const stockItem = await readRecord(db, "stock_items", stockItemId);
       if (!stockItem) throw new Error("Um insumo da ficha técnica não existe mais.");
       const balance = await db.prepare("SELECT quantity FROM stock_balances WHERE id=?").bind(stockItemId).first();
-      if (Number(balance?.quantity || 0) + 0.000001 < requiredQuantity) throw new Error(`Estoque insuficiente de ${stockItem.name}. Disponível: ${Number(balance?.quantity || 0)} ${stockItem.unit || "un"}.`);
+      if (!ALLOW_SALES_WITHOUT_STOCK && Number(balance?.quantity || 0) + 0.000001 < requiredQuantity) throw new Error(`Estoque insuficiente de ${stockItem.name}. Disponível: ${Number(balance?.quantity || 0)} ${stockItem.unit || "un"}.`);
       statements.push(...atomicStockChange(db, stockItemId, stockItem, "sale", requiredQuantity, { reason: `Pedido com ${items.map((item) => item.description).join(", ")}`, responsible: "Sistema", reference_id: orderId }));
     }
     for (const item of items) {
-      if (item.stock_usage.length || !item.stock_controlled) continue;
+      if (item.stock_usage.length || !item.menu_item.stock_controlled) continue;
       const movement = stockMovement(db, item.menu_id, item.menu_item, "sale", item.quantity, { reason: "Venda", responsible: "Sistema", reference_id: orderId, legacy_menu: true });
       statements.push(putRecord(db, "menu", item.menu_id, item.menu_item), movement);
     }
