@@ -72,6 +72,22 @@ test('purchases and invoice imports on negative balances keep valid costs',async
     assert.equal(f.balance('beer'),amount-2);assert.equal(f.records('stock_items')[0].cost_price,4);
   }
 });
+test('purchase lines treat package_cost as total paid and calculate unit cost by item, kilo or liter',async()=>{
+  const f=fixture();
+  const cases=[
+    {id:'unit',name:'Unidades',unit:'un',quantity:12,total:120,expected:10},
+    {id:'weight',name:'Farinha',unit:'kg',quantity:2.5,total:37.5,expected:15},
+    {id:'volume',name:'Xarope',unit:'L',quantity:3,total:45,expected:15},
+  ];
+  for(const item of cases){
+    f.put('stock_items',item.id,{name:item.name,unit:item.unit,cost_price:0});
+    f.sqlite.prepare('INSERT INTO stock_balances(id,quantity) VALUES(?,0)').run(item.id);
+  }
+  const response=await f.call({action:'stock.purchase.batch',responsible:'Teste',items:cases.map(item=>({id:item.id,package_quantity:item.quantity,units_per_package:1,purchase_unit:'direct',total_paid:item.total}))});
+  assert.equal(response.status,200,JSON.stringify(response));
+  for(const item of cases){const saved=f.records('stock_items').find(row=>row.id===item.id);assert.equal(f.balance(item.id),item.quantity);assert.equal(saved.cost_price,item.expected);}
+  assert.equal(response.total_cost,202.5);
+});
 test('stock policy reaches front devices and quick creation stays admin only',async()=>{
   const f=fixture();const {createHash}=await import('node:crypto');f.put('device_access','front',{role:'front',token_hash:createHash('sha256').update('front').digest('hex')});
   const response=await worker.fetch(new Request('http://localhost/api/state',{headers:{'x-device-access':'front'}}),f.env);assert.equal((await response.json()).stock_policy.allow_sales_without_stock,true);

@@ -492,9 +492,11 @@ async function mutate(request, env) {
         contentPerUnit *= converted;
       }
       const movementQuantity = packageQuantity * unitsPerPackage * contentPerUnit;
-      const hasCost = line.package_cost !== "" && line.package_cost != null;
-      const entryCost = hasCost ? amount(line.package_cost, `o valor por ${stockUnit} de ${item.name}`) : null;
-      const purchaseTotal = entryCost == null ? 0 : Math.round(entryCost * movementQuantity * 100) / 100;
+      const hasTotalPaid = line.total_paid !== "" && line.total_paid != null;
+      const hasUnitCost = !hasTotalPaid && line.package_cost !== "" && line.package_cost != null;
+      const totalPaid = hasTotalPaid ? amount(line.total_paid, `o valor total pago por ${item.name}`) : null;
+      const entryCost = hasTotalPaid ? (movementQuantity > 0 ? Math.round(totalPaid / movementQuantity * 10000) / 10000 : null) : hasUnitCost ? amount(line.package_cost, `o valor por ${stockUnit} de ${item.name}`) : null;
+      const purchaseTotal = totalPaid ?? (entryCost == null ? 0 : Math.round(entryCost * movementQuantity * 100) / 100);
       const balance = line.id ? await db.prepare("SELECT quantity FROM stock_balances WHERE id=?").bind(itemId).first() : null;
       const current = Number(balance?.quantity || 0);
       item.purchase_unit = String(line.purchase_unit || "un").trim();

@@ -30,6 +30,9 @@ estrutura devem ser adicionadas como migracoes numeradas em `migrations/`.
 - Em Estoque → Cadastrar itens, nome e quantidade (inclusive zero) bastam por item.
   Custo é opcional; categoria, unidade e mínimo ficam em Mais opções. O responsável
   é informado uma vez por lote. O vínculo de consumo continua no Cardápio.
+- Em Registrar compra, o valor informado é o total pago pela linha. O sistema divide
+  esse total pela quantidade efetivamente adicionada (unidades, kg ou L) e salva o
+  custo unitário calculado.
 - Para publicar esta versão, aplicar primeiro `npm run db:remote` (migração 0003,
   que preserva saldos e datas) e depois `npm run deploy`. Para ambiente local,
   usar `npm run db:local` antes de `npm run dev`.
