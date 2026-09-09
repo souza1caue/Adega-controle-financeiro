@@ -558,17 +558,78 @@ const updateBatchPurchaseLineFieldsBase=updateBatchPurchaseLineFields;
 updateBatchPurchaseLineFields=function(form){if(form&&!form.elements.stock_category){const type=form.elements.stock_type?.value;form.querySelector("[data-batch-purchase-new]")?.insertAdjacentHTML("beforeend",`<div class="field"><label>Categoria no estoque</label><select name="stock_category"><option ${type==="weight"?'selected':''}>Comida</option><option ${type!=="weight"?'selected':''}>Bebida</option><option value="Descartável">Embalagem/Descartável</option></select></div>`)}updateBatchPurchaseLineFieldsBase(form)}
 function updateBatchPurchaseLinePreview(form){const quantity=Number(form?.elements.package_quantity.value||0),units=Number(form?.elements.units_per_package.value||0),totalPaid=Number(form?.elements.package_cost.value||0),type=form?.elements.purchase_unit.value,item=data.stock_items[form?.elements.id.value],stockType=form?.elements.stock_type?.value,unit=item?.unit||(stockType==="weight"?"kg":stockType==="volume"?"L":"un"),line={package_quantity:quantity,units_per_package:units,purchase_unit:type,content_per_unit:form?.elements.content_per_unit.value,content_unit:form?.elements.content_unit.value,unit},amount=purchaseStockAmount(line,item),unitCost=amount>0?totalPaid/amount:0,target=form?.querySelector("[data-batch-line-preview]");if(!target)return;target.innerHTML=quantity&&units&&amount?`<b>${stockQuantity(amount)} ${esc(stockUnitLabel(unit,amount))} entrarão no estoque</b><span>${money(totalPaid)} pagos no total · <b>${money(unitCost)} por ${esc(stockUnitLabel(unit,1))}</b></span>`:"<span>Informe a quantidade para ver o resumo.</span>"}
 stockPurchaseDialog=function(selectedId=""){pendingPurchaseItems=[];pendingPurchaseMeta={responsible:"",note:""};if(selectedId)purchaseLineDialog("",selectedId);else renderBatchPurchaseDialog()}
+const stockTemplates = [
+  {name:"Cerveja lata 350 ml",unit:"lata",category:"Bebida",units:12},
+  {name:"Cerveja latão 473 ml",unit:"latão",category:"Bebida",units:12},
+  {name:"Refrigerante 2 L",unit:"garrafa",category:"Bebida",units:6},
+  {name:"Água 500 ml",unit:"garrafa",category:"Bebida",units:12},
+  {name:"Gelo em pacote",unit:"pacote",category:"Bebida",units:1},
+  {name:"Ingrediente por kg",unit:"kg",category:"Comida",units:1},
+  {name:"Copo descartável",unit:"un",category:"Descartável",units:100}
+];
+function stockTemplateOptions(){return '<option value="">Personalizado</option>'+stockTemplates.map((item,index)=>`<option value="${index}">${esc(item.name)}</option>`).join("")}
+function frequentStockItems(){return entries(data.stock_items).sort((a,b)=>Number(b[1].purchase_count||0)-Number(a[1].purchase_count||0)||a[1].name.localeCompare(b[1].name))}
+const renderPurchaseBatchBase=renderBatchPurchaseDialog;
+renderBatchPurchaseDialog=function(){
+  renderPurchaseBatchBase();
+  const suggestions=frequentStockItems().filter(([id])=>!pendingPurchaseItems.some(item=>item.id===id)).slice(0,8);
+  if(suggestions.length)modalBody.querySelector(".batch-purchase-list").insertAdjacentHTML("beforebegin",`<div class="stock-replenish-shortcuts"><p>Reposição rápida · escolha um produto</p><div class="actions">${suggestions.map(([id,item])=>`<button type="button" data-replenish-item="${esc(id)}">${esc(item.name)}</button>`).join("")}</div></div>`);
+};
+const purchaseLineBase=purchaseLineDialog;
+purchaseLineDialog=function(index="",selectedId=""){
+  purchaseLineBase(index,selectedId);
+  const form=modalBody.querySelector("[data-form='stock-purchase-line']");
+  const config=document.createElement("details");config.className="stock-optional-fields";config.dataset.packageSettings="";
+  config.innerHTML='<summary>Alterar embalagem</summary><p class="muted">Esta configuração será lembrada na próxima compra.</p>';
+  const mode=form.elements.purchase_unit.closest(".field");mode.before(config);
+  config.append(mode,form.querySelector("[data-batch-units]"),form.querySelector("[data-batch-content]"));
+  config.open=!form.elements.id.value;
+  if(index!=="" && pendingPurchaseItems[Number(index)]?.stock_category)form.elements.stock_category.value=pendingPurchaseItems[Number(index)].stock_category;
+  form.addEventListener("invalid",event=>{const details=event.target.closest("details");if(details)details.open=true},true);
+  form.querySelector("[data-batch-purchase-new]").insertAdjacentHTML("afterbegin",`<div class="field"><label>Modelo pronto</label><select data-purchase-template>${stockTemplateOptions()}</select></div>`);
+  form.elements.id.closest(".field").insertAdjacentHTML("afterend",'<p class="notice" data-package-summary></p>');
+  updateBatchPurchaseLineFields(form);
+};
+const purchaseFieldsSavedBase=updateBatchPurchaseLineFields;
+updateBatchPurchaseLineFields=function(form){
+  purchaseFieldsSavedBase(form);if(!form)return;
+  const summary=form.querySelector("[data-package-summary]");
+  if(summary)summary.textContent=form.elements.purchase_unit.value==="package"?`Embalagem com ${form.elements.units_per_package.value} unidade(s)${form.querySelector("[data-batch-content]").hidden?"":` de ${form.elements.content_per_unit.value} ${form.elements.content_unit.value}`}. Confira em Alterar embalagem.`:"Compra por quantidade direta.";
+};
+document.addEventListener("click",event=>{
+  const button=event.target.closest("[data-replenish-item]");
+  if(button){preservePurchaseMeta();purchaseLineDialog("",button.dataset.replenishItem)}
+});
+document.addEventListener("change",event=>{
+  if(event.target.matches("[data-stock-template]")){
+    const template=stockTemplates[event.target.value];if(!template)return;
+    const row=event.target.closest(".quick-stock-row");
+    for(const [key,value] of Object.entries({name:template.name,unit:template.unit,category:template.category,package:template.units}))row.querySelector(`[data-quick-${key}]`).value=value;
+    row.querySelector("details").open=true;
+  }
+  if(event.target.matches("[data-purchase-template]")){
+    const template=stockTemplates[event.target.value];if(!template)return;
+    const form=event.target.form;form.elements.name.value=template.name;form.elements.stock_type.value=template.unit==="kg"?"weight":"unit";
+    form.elements.stock_category.value=template.category;form.elements.purchase_unit.value=template.units>1?"package":"direct";form.elements.units_per_package.value=template.units;
+    updateBatchPurchaseLineFields(form);
+  }
+  if(event.target.matches("[data-form='stock-purchase-line'] [name='units_per_package'],[data-form='stock-purchase-line'] [name='content_per_unit'],[data-form='stock-purchase-line'] [name='content_unit']"))updateBatchPurchaseLineFields(event.target.form);
+  if(event.target.matches("[data-batch-purchase-item]")){
+    const config=event.target.form.querySelector("[data-package-settings]");if(config)config.open=!event.target.value;
+  }
+});
 function quickStockRow(){return`<div class="quick-stock-row">
+  <div class="field quick-stock-template"><label>Começar com um modelo</label><select data-stock-template>${stockTemplateOptions()}</select><small>Edite o nome para incluir a marca. Confira a embalagem sugerida.</small></div>
   <div class="field"><label>Produto</label><input data-quick-name placeholder="Ex.: Skol Latão" aria-label="Produto"></div>
   <div class="field"><label>Quantidade atual</label><input data-quick-quantity type="number" min="0" step=".001" value="0" inputmode="decimal" aria-label="Quantidade atual"></div>
   <div class="field"><label>Custo por unidade (opcional)</label><input data-quick-cost type="number" min="0" step=".01" placeholder="R$" inputmode="decimal" aria-label="Custo por unidade"></div>
   <button type="button" class="danger quick-stock-remove" data-remove-quick-stock aria-label="Remover linha">×</button>
-  <details class="quick-stock-options"><summary>Mais opções · categoria, unidade e estoque mínimo</summary><div class="quick-stock-options-grid">
+  <details class="quick-stock-options"><summary>Configuração · embalagem, categoria e unidade</summary><div class="quick-stock-options-grid">
   <div class="field"><label>Categoria</label><select data-quick-category aria-label="Categoria"><option>Bebida</option><option>Comida</option><option value="Descartável">Embalagem/Descartável</option></select></div>
   <div class="field"><label>Unidade contada</label><select data-quick-unit aria-label="Unidade contada"><option value="un">Unidade</option><option value="lata">Lata</option><option value="latão">Latão</option><option value="garrafa">Garrafa</option><option value="pacote">Pacote</option><option value="kg">kg</option><option value="g">g</option><option value="L">Litro</option><option value="ml">ml</option></select></div>
-  <div class="field"><label>Estoque mínimo</label><input data-quick-minimum type="number" min="0" step=".001" value="0" inputmode="decimal" aria-label="Estoque mínimo"></div></div></details>
+  <div class="field"><label>Unidades por embalagem na próxima compra</label><input data-quick-package type="number" min="1" step="1" value="1" required></div><div class="field"><label>Estoque mínimo</label><input data-quick-minimum type="number" min="0" step=".001" value="0" inputmode="decimal" aria-label="Estoque mínimo"></div></div></details>
   </div>`}
-function quickStockDialog(){openModal(`<form data-form="quick-stock"><div class="batch-purchase-head"><div><span class="eyebrow">Cadastro simples</span><h2>Cadastrar itens no estoque</h2><p class="muted">Informe o nome e a quantidade que existe hoje. Pode começar com zero e preencher o custo depois.</p></div></div><p class="notice">Padrão: bebida, contada por unidade. Ex.: 2 fardos com 12 latas = 24 unidades. Para alimentos por peso, escolha kg em Mais opções.</p><div class="quick-stock-list" data-quick-stock-list>${quickStockRow()}</div><button type="button" data-add-quick-stock>+ Adicionar outro produto</button><p class="muted">O cadastro cria o estoque. Para baixar nas vendas, vincule o item aos insumos do produto no Cardápio. Itens já cadastrados recebem saldo em Registrar compra.</p><div class="quick-stock-footer"><div class="field"><label>Quem está cadastrando?</label><input name="responsible" required></div><button type="submit" class="primary checkout-button">Salvar itens</button></div></form>`);modalBody.querySelector("[data-quick-name]")?.focus()}
+function quickStockDialog(){openModal(`<form data-form="quick-stock"><div class="batch-purchase-head"><div><span class="eyebrow">Cadastro simples</span><h2>Cadastrar itens no estoque</h2><p class="muted">Informe o nome e a quantidade que existe hoje. Pode começar com zero e preencher o custo depois.</p></div></div><p class="notice">Escolha um modelo ou preencha livremente. A quantidade atual é o total de unidades; a embalagem fica salva para as próximas compras.</p><div class="quick-stock-list" data-quick-stock-list>${quickStockRow()}</div><button type="button" data-add-quick-stock>+ Adicionar outro produto</button><p class="muted">O cadastro cria o estoque. Para baixar nas vendas, vincule o item aos insumos do produto no Cardápio. Itens já cadastrados recebem saldo em Registrar compra.</p><div class="quick-stock-footer"><div class="field"><label>Quem está cadastrando?</label><input name="responsible" required></div><button type="submit" class="primary checkout-button">Salvar itens</button></div></form>`);modalBody.querySelector("[data-quick-name]")?.focus()}
 stockItemEditDialog=function(id){stockItemEditDialogWithPortion(id);const form=modalBody.querySelector("[data-form='stock-item-details']"),item=data.stock_items[id],stockCategory=item?.stock_category||"Bebida";form?.querySelector("[name='portion_size']")?.closest(".form-row")?.remove();form?.elements.name?.closest(".field")?.insertAdjacentHTML("afterend",`<div class="field"><label>Categoria no estoque</label><select name="stock_category"><option ${stockCategory==="Comida"?'selected':''}>Comida</option><option ${stockCategory==="Bebida"?'selected':''}>Bebida</option><option value="Descartável" ${stockCategory==="Descartável"?'selected':''}>Embalagem/Descartável</option></select></div>`)}
 function stockItemDialog(id=""){const i=data.stock_items[id]||{},quantity=id?"":"1",units=[["un","Unidade"],["lata","Lata"],["latão","Latão"],["garrafa","Garrafa"],["galão","Galão"],["pacote","Pacote"],["caixa","Caixa"],["fardo","Fardo"],["kg","Quilograma (kg)"],["g","Grama (g)"],["L","Litro (L)"],["ml","Mililitro (ml)"]];openModal(`<h2>${id?"Editar produto":"Cadastrar produto"}</h2><p class="muted">A quantidade representa quantas embalagens entram no estoque. O volume de cada embalagem é informado separadamente.</p><form data-form="stock-item"><input type="hidden" name="id" value="${id}"><div class="form-row"><div class="field"><label>Código do produto</label><input name="sku" value="${esc(i.sku||"")}" placeholder="Ex.: 008744" autofocus></div><div class="field"><label>Produto</label><input name="name" value="${esc(i.name||"")}" placeholder="Ex.: Skol Latão" required></div></div><div class="form-row"><div class="field"><label>${id?"Quantidade de entrada adicional":"Quantidade de entrada"}</label><input name="entry_quantity" type="number" min="0" step=".001" value="${quantity}" ${id?"":"required"}></div><div class="field"><label>Embalagem contada no estoque</label><select name="unit">${units.map(([value,label])=>`<option value="${value}" ${i.unit===value?'selected':''}>${label}</option>`).join("")}</select><small class="muted">Ex.: 25 latões = quantidade 25 e embalagem Latão.</small></div></div><div class="form-row"><div class="field"><label>Conteúdo de cada embalagem (opcional)</label><input name="package_size" type="number" min="0" step=".001" value="${i.package_size??''}" placeholder="Ex.: 473 ou 1"></div><div class="field"><label>Medida do conteúdo</label><select name="package_measure">${["ml","L","g","kg"].map(v=>`<option ${i.package_measure===v?'selected':''}>${v}</option>`).join("")}</select><small class="muted">Ex.: 473 ml por latão ou 1 L por garrafa.</small></div></div><div class="form-row"><div class="field"><label>Valor por embalagem</label><input name="cost_price" type="number" min="0" step=".01" value="${i.cost_price??0}" required></div><div class="field"><label>Valor total</label><div class="summary-value" data-manual-stock-total>${money(Number(quantity||0)*Number(i.cost_price||0))}</div></div></div><div class="form-row"><div class="field"><label>Fornecedor</label><input name="supplier" value="${esc(i.supplier||"")}" placeholder="Razão social ou nome"></div><div class="field"><label>Número do pedido/documento</label><input name="document_number" placeholder="Ex.: 032026072115"></div></div><div class="form-row"><div class="field"><label>Estoque mínimo (em embalagens)</label><input name="stock_minimum" type="number" min="0" step=".001" value="${i.stock_minimum??0}" required></div><div class="field"><label>Código de barras</label><input name="barcode" value="${esc(i.barcode||"")}"></div></div><div class="field"><label>Responsável pelo cadastro/entrada</label><input name="responsible" placeholder="Nome de quem conferiu" required></div><button class="primary checkout-button">${id?"Salvar produto":"Cadastrar produto e dar entrada"}</button></form>`)}
 const stockItemDialogWithoutPortion=stockItemDialog;
@@ -759,7 +820,7 @@ document.addEventListener("click",async event=>{
     else if(el.hasAttribute("data-new-purchase"))stockPurchaseDialog();
     else if(el.hasAttribute("data-quick-stock"))quickStockDialog();
     else if(el.hasAttribute("data-add-quick-stock")){const form=el.closest("form");form.querySelector("[data-quick-stock-list]").insertAdjacentHTML("beforeend",quickStockRow());form.querySelector(".quick-stock-row:last-child [data-quick-name]")?.focus()}
-    else if(el.hasAttribute("data-remove-quick-stock")){const list=el.closest("[data-quick-stock-list]"),row=el.closest(".quick-stock-row");if(list.children.length>1)row.remove();else for(const input of row.querySelectorAll("input"))input.value=input.hasAttribute("data-quick-minimum")||input.hasAttribute("data-quick-quantity")?"0":""}
+    else if(el.hasAttribute("data-remove-quick-stock")){const list=el.closest("[data-quick-stock-list]"),row=el.closest(".quick-stock-row");if(list.children.length>1)row.remove();else row.outerHTML=quickStockRow()}
     else if(el.dataset.stockPurchase)stockPurchaseDialog(el.dataset.stockPurchase);
     else if(el.hasAttribute("data-add-purchase-line")){preservePurchaseMeta();purchaseLineDialog()}
     else if(el.dataset.editPurchaseLine!==undefined){preservePurchaseMeta();purchaseLineDialog(el.dataset.editPurchaseLine)}
@@ -832,7 +893,7 @@ document.addEventListener("submit",async event=>{
         if(!name){if(quantity||cost!==""||minimum)throw new Error("Informe o nome do produto na linha preenchida.");return null}
         if(!Number.isFinite(quantity)||quantity<0)throw new Error(`Informe uma quantidade válida para ${name}.`);
         if(cost!==""&&(!Number.isFinite(Number(cost))||Number(cost)<0))throw new Error(`Informe um custo válido para ${name}.`);
-        return{name,stock_category:row.querySelector("[data-quick-category]").value,unit:row.querySelector("[data-quick-unit]").value,stock_minimum:minimum,package_quantity:quantity,package_cost:cost===""?"":Number(cost)};
+        return{name,default_units_per_package:Number(row.querySelector("[data-quick-package]").value),stock_category:row.querySelector("[data-quick-category]").value,unit:row.querySelector("[data-quick-unit]").value,stock_minimum:minimum,package_quantity:quantity,package_cost:cost===""?"":Number(cost)};
       }).filter(Boolean);
       if(!items.length)throw new Error("Preencha pelo menos um produto.");
       const submit=form.querySelector("button[type='submit']");if(submit.disabled)return;submit.disabled=true;submit.textContent="Salvando...";
@@ -891,7 +952,7 @@ document.addEventListener("change",async event=>{
   if(event.target.matches("[data-form='account-payment'] [name='settlement_type'],[data-form='account-payment'] [name='payment_method'],[data-form='account-payment'] [data-allocation-toggle]")){if(event.target.matches("[data-allocation-toggle]")&&event.target.checked){const input=event.target.parentElement.querySelector("[data-allocation-item]");if(input.value===""||Number(input.value)<=0)input.value="1"}updateAccountPaymentFields(event.target.form)}
   if(event.target.matches("[data-form='stock-purchase'] [data-purchase-item]"))updateStockPurchaseFields(event.target.form)
   if(event.target.matches("[data-form='stock-purchase'] [name='purchase_unit']"))updatePurchasePackageFields(event.target.form)
-  if(event.target.matches("[data-form='stock-purchase-line'] [data-batch-purchase-item]")){const form=event.target.form,item=data.stock_items[event.target.value];if(item){form.elements.purchase_unit.value=["package","fardo","caixa","pacote"].includes(item.purchase_unit)?"package":"direct";form.elements.units_per_package.value=Number(item.units_per_package||1)}updateBatchPurchaseLineFields(form)}
+  if(event.target.matches("[data-form='stock-purchase-line'] [data-batch-purchase-item]")){const form=event.target.form,item=data.stock_items[event.target.value];if(item){form.elements.purchase_unit.value=["package","fardo","caixa","pacote"].includes(item.purchase_unit)?"package":"direct";form.elements.units_per_package.value=Number(item.units_per_package||1);form.elements.content_per_unit.value=item.package_size||"";form.elements.content_unit.value=item.package_measure||(["kg","g"].includes(item.unit)?"kg":"L")}updateBatchPurchaseLineFields(form)}
   if(event.target.matches("[data-form='stock-purchase-line'] [name='purchase_unit'],[data-form='stock-purchase-line'] [name='stock_type']")){const form=event.target.form;if(event.target.name==="stock_type"&&!form.elements.id.value&&form.elements.stock_category)form.elements.stock_category.value=event.target.value==="weight"?"Comida":"Bebida";updateBatchPurchaseLineFields(form)}
   if(event.target.matches("[data-form='stock-purchase-line'] [name='content_unit']"))updateBatchPurchaseLinePreview(event.target.form)
   if(event.target.matches("[data-stock-type]")){const form=event.target.form,adjust=event.target.value==="adjustment";form.querySelector("[data-stock-quantity]").hidden=adjust;form.querySelector("[data-stock-balance]").hidden=!adjust;form.elements.quantity.required=!adjust;form.elements.new_balance.required=adjust}

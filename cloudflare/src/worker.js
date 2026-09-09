@@ -501,6 +501,13 @@ async function mutate(request, env) {
       const current = Number(balance?.quantity || 0);
       item.purchase_unit = String(line.purchase_unit || "un").trim();
       item.units_per_package = unitsPerPackage;
+      if (quickCreate && line.default_units_per_package != null) {
+        const savedUnits = Number(line.default_units_per_package);
+        if (!Number.isInteger(savedUnits) || savedUnits <= 0) throw new Error("Informe uma embalagem válida para a próxima compra.");
+        item.units_per_package = savedUnits;
+        item.purchase_unit = savedUnits > 1 ? "package" : "direct";
+      }
+      if (!quickCreate) item.purchase_count = Number(item.purchase_count || 0) + 1;
       if (bulkPackage) { item.package_size = Number(line.content_per_unit); item.package_measure = contentUnit; }
       item.updated_at = now();
       if (entryCost != null) {

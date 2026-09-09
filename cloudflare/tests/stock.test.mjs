@@ -101,3 +101,23 @@ test('invoice entries and counted adjustments regularize negative stock',async()
   assert.equal(f.balance('beer'),-3);assert.equal(f.records('stock_items')[0].cost_price,4);
   assert.equal((await f.call({action:'stock.item.move',id:'beer',type:'adjustment',new_balance:7,reason:'Contagem',responsible:'Teste'})).status,200);assert.equal(f.balance('beer'),7);
 });
+
+
+test('saved packaging does not multiply initial count and replenishment offsets sales',async()=>{
+  const f=fixture();
+  assert.equal((await f.call({action:'stock.quick.create',responsible:'Teste',items:[{name:'Lata modelo',unit:'un',package_quantity:2,default_units_per_package:12}]})).status,200);
+  const item=f.records('stock_items').find(item=>item.name==='Lata modelo');
+  assert.equal(f.balance(item.id),2);assert.equal(item.units_per_package,12);assert.equal(item.purchase_unit,'package');
+  f.put('recipes','beer',{components:[{stock_item_id:item.id,quantity:1}]});
+  assert.equal((await f.call(sale('pending-model',7))).status,200);
+  assert.equal(f.balance(item.id),-5);
+  assert.equal((await f.call({action:'stock.purchase.batch',responsible:'Teste',items:[{id:item.id,purchase_unit:item.purchase_unit,units_per_package:item.units_per_package,package_quantity:3,total_paid:108}]})).status,200);
+  assert.equal(f.balance(item.id),31);
+  const saved=f.records('stock_items').find(row=>row.id===item.id);
+  assert.equal(saved.cost_price,3);assert.equal(saved.purchase_count,1);assert.equal(saved.units_per_package,12);
+});
+test('invalid saved packaging leaves initial registration untouched',async()=>{
+  const f=fixture();
+  assert.equal((await f.call({action:'stock.quick.create',responsible:'Teste',items:[{name:'Invalid model',package_quantity:2,default_units_per_package:0}]})).status,400);
+  assert.equal(f.records('stock_items').length,1);
+});

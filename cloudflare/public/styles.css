@@ -143,3 +143,7 @@ button,.button,.product-tile{touch-action:manipulation}
 .quick-stock-row{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) minmax(0,1.1fr) 36px;align-items:end;gap:12px}
 .quick-stock-row .field{gap:6px;min-width:0}.quick-stock-row label{display:block;font-size:12px}.quick-stock-options{grid-column:1/-1}.quick-stock-options summary{cursor:pointer;color:var(--muted);font-size:12px;padding:5px 0}.quick-stock-options-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:10px}.quick-stock-list{max-height:55vh;margin-bottom:12px}
 @media(max-width:650px){.quick-stock-row{grid-template-columns:minmax(0,1fr) 36px}.quick-stock-row>.field{grid-column:1}.quick-stock-remove{grid-column:2;grid-row:1}.quick-stock-options-grid{grid-template-columns:1fr}.stock-policy,.stock-warning{overflow-wrap:anywhere}}
+
+.quick-stock-template{grid-column:1/-1}.stock-replenish-shortcuts{margin:16px 0}.stock-replenish-shortcuts .actions{flex-wrap:wrap}.stock-replenish-shortcuts button{white-space:normal}.stock-replenish-shortcuts p{font-weight:600}
+
+@media(max-width:650px){.quick-stock-row>.quick-stock-template{grid-column:1}.quick-stock-template small{overflow-wrap:anywhere}}
