@@ -1,3 +1,14 @@
+function paymentGroup(value) {
+  const method = String(value || "").trim();
+  if (["Dinheiro", "Dinheiro físico"].includes(method)) return "Dinheiro";
+  if (["Digital", "Pix", "Cartão", "Cartão - Débito", "Cartão - Crédito"].includes(method)) return "Digital";
+  return method;
+}
+function receivedPaymentMethod(value) {
+  const method = paymentGroup(value);
+  if (!["Dinheiro", "Digital"].includes(method)) throw new Error("Forma de pagamento inválida.");
+  return method;
+}
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 // Operational flag, also exposed to the UI through /api/state.
 const ALLOW_SALES_WITHOUT_STOCK = true;
@@ -752,10 +763,7 @@ async function mutate(request, env) {
     if (account.account_type === "tab" && account.cash_session_id !== open.id) throw new Error("Esta comanda pertence a outro caixa.");
     required(input.payment_method, "a forma de pagamento");
     let paymentMethod = input.payment_method;
-    if (paymentMethod === "Cartão") {
-      if (!["Débito", "Crédito"].includes(input.card_type)) throw new Error("Escolha Débito ou Crédito para o pagamento em cartão.");
-      paymentMethod = `Cartão - ${input.card_type}`;
-    } else if (!["Dinheiro", "Pix"].includes(paymentMethod)) throw new Error("Forma de pagamento inválida.");
+    paymentMethod = receivedPaymentMethod(paymentMethod);
     let paymentResponsible;
     if (account.account_type === "tab") {
       const origin = input.origin_token ? await orderOrigin(db, input.origin_token) : null;
@@ -795,7 +803,7 @@ async function mutate(request, env) {
     }
     const paymentId = uid();
     const createdAt = now();
-    const payment = { account_id: id, customer_name: account.customer_name, amount: received, payment_method: paymentMethod, card_type: input.card_type || "", responsible: paymentResponsible, note: (input.note || "").trim(), settlement_type: settlementType, split_people: settlementType === "equal" ? Math.max(2, Number(input.split_people || 2)) : null, allocations, cash_session_id: open.id, created_at: createdAt };
+    const payment = { account_id: id, customer_name: account.customer_name, amount: received, payment_method: paymentMethod, card_type: "", responsible: paymentResponsible, note: (input.note || "").trim(), settlement_type: settlementType, split_people: settlementType === "equal" ? Math.max(2, Number(input.split_people || 2)) : null, allocations, cash_session_id: open.id, created_at: createdAt };
     const remainingBalance = Math.max(0, Math.round((balance - received) * 100) / 100);
     account.payments_total = Math.round((Number(account.payments_total || 0) + received) * 100) / 100;
     account.last_payment_at = createdAt;
@@ -957,14 +965,11 @@ async function mutate(request, env) {
       let paymentMethod = "Consumação de evento";
       if (overage > 0.001) {
         required(input.payment_method, "a forma de pagamento do excedente"); paymentMethod = input.payment_method;
-        if (paymentMethod === "Cartão") {
-          if (!["Débito", "Crédito"].includes(input.card_type)) throw new Error("Escolha Débito ou Crédito para o pagamento em cartão.");
-          paymentMethod = `Cartão - ${input.card_type}`;
-        } else if (!["Dinheiro", "Pix"].includes(paymentMethod)) throw new Error("Forma de pagamento inválida.");
+        paymentMethod = receivedPaymentMethod(paymentMethod);
       }
       const revenueRatio = orderTotal > 0 ? overage / orderTotal : 0;
       const actualCost = items.reduce((sum, item) => sum + (item.stock_usage.length ? item.stock_usage.reduce((itemCost, usage) => itemCost + Number(usage.quantity || 0) * item.quantity * Number(usage.unit_cost || 0), 0) : Number(item.menu_item.cost_price || 0) * item.quantity), 0);
-      for (const item of items) statements.push(putRecord(db, "sales", uid(), { menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price * revenueRatio, menu_price: item.price, event_consumption_amount: item.quantity * item.price * (1 - revenueRatio), item_note: item.note, note, customer_name: hostedEvent.name, payment_method: paymentMethod, card_type: overage > 0.001 ? input.card_type || "" : "", hosted_event_id: input.event_id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
+      for (const item of items) statements.push(putRecord(db, "sales", uid(), { menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price * revenueRatio, menu_price: item.price, event_consumption_amount: item.quantity * item.price * (1 - revenueRatio), item_note: item.note, note, customer_name: hostedEvent.name, payment_method: paymentMethod, card_type: "", hosted_event_id: input.event_id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
       hostedEvent.used_amount = Number(hostedEvent.used_amount || 0) + covered;
       hostedEvent.actual_cost = Number(hostedEvent.actual_cost || 0) + actualCost;
       hostedEvent.orders = [...(hostedEvent.orders || []), { id: orderId, items: items.map(item => ({ menu_id: item.menu_id, description: item.description, quantity: item.quantity, unit_price: item.price, note: item.note })), order_total: orderTotal, covered_amount: covered, overage_amount: overage, actual_cost: actualCost, payment_method: paymentMethod, created_at: createdAt, created_by: origin.source_name }];
@@ -981,16 +986,13 @@ async function mutate(request, env) {
     } else {
       required(input.payment_method, "a forma de pagamento");
       let paymentMethod = input.payment_method;
-      if (paymentMethod === "Cartão") {
-        if (!["Débito", "Crédito"].includes(input.card_type)) throw new Error("Escolha Débito ou Crédito para o pagamento em cartão.");
-        paymentMethod = `Cartão - ${input.card_type}`;
-      } else if (!["Dinheiro", "Pix"].includes(paymentMethod)) throw new Error("Forma de pagamento inválida.");
+      paymentMethod = receivedPaymentMethod(paymentMethod);
       if (shouldPrint) required(customerName, "o nome do cliente para enviar o pedido à cozinha");
       for (const item of items) {
         const saleId = uid();
-        statements.push(putRecord(db, "sales", saleId, { menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, payment_method: paymentMethod, card_type: input.card_type || "", cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
+        statements.push(putRecord(db, "sales", saleId, { menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, payment_method: paymentMethod, card_type: "", cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
       }
-      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: customerName, note, origin: "Venda", payment_method: paymentMethod, card_type: input.card_type || "", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
+      if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: customerName, note, origin: "Venda", payment_method: paymentMethod, card_type: "", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
     }
     const requirements = new Map();
     for (const item of items) for (const usage of item.stock_usage) requirements.set(usage.stock_item_id, (requirements.get(usage.stock_item_id) || 0) + Number(usage.quantity) * item.quantity);
@@ -1012,7 +1014,7 @@ async function mutate(request, env) {
     if (!open) throw new Error("Abra o caixa no Admin antes de registrar saídas.");
     required(input.description, "o item");
     required(input.payment_method, "a forma de pagamento");
-    const sale = { description: input.description.trim(), quantity: quantity(input.quantity), price: Number(input.price), payment_method: input.payment_method, note: (input.note || "").trim(), customer_name: (input.customer_name || "").trim(), cash_session_id: open.id, created_at: now() };
+    const sale = { description: input.description.trim(), quantity: quantity(input.quantity), price: Number(input.price), payment_method: receivedPaymentMethod(input.payment_method), note: (input.note || "").trim(), customer_name: (input.customer_name || "").trim(), cash_session_id: open.id, created_at: now() };
     const statements = [putRecord(db, "sales", id, sale)];
     if (input.print_order || input.send_to_kitchen) {
       statements.push(putRecord(db, "kitchen", uid(), { ...sale, origin: "Venda", status: "pending", print_status: "pending", print_count: 0 }));
@@ -1132,10 +1134,10 @@ async function mutate(request, env) {
     const directSales = parsed.filter((sale) => !sale.account_id && sale.payment_method !== "Caderneta");
     const accountSales = parsed.filter((sale) => sale.account_id || sale.payment_method === "Caderneta");
     const paymentTotals = {};
-    for (const sale of directSales) paymentTotals[sale.payment_method || "Não informado"] = (paymentTotals[sale.payment_method || "Não informado"] || 0) + Number(sale.quantity || 0) * Number(sale.price || 0);
+    for (const sale of directSales) paymentTotals[paymentGroup(sale.payment_method) || "Não informado"] = (paymentTotals[paymentGroup(sale.payment_method) || "Não informado"] || 0) + Number(sale.quantity || 0) * Number(sale.price || 0);
     const receiptRows = await db.prepare("SELECT data FROM records WHERE kind='account_payments' AND json_extract(data,'$.cash_session_id')=?").bind(id).all();
     const receipts = receiptRows.results.map((row) => JSON.parse(row.data)).filter((payment) => !payment.voided_at);
-    for (const payment of receipts) paymentTotals[payment.payment_method] = (paymentTotals[payment.payment_method] || 0) + Number(payment.amount || 0);
+    for (const payment of receipts) paymentTotals[paymentGroup(payment.payment_method)] = (paymentTotals[paymentGroup(payment.payment_method)] || 0) + Number(payment.amount || 0);
     const supplies = (cash.movements || []).filter((movement) => movement.type === 'supply').reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
     const withdrawals = (cash.movements || []).filter((movement) => movement.type === 'withdrawal').reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
     const expectedCash = Number(cash.opening_amount || 0) + Number(paymentTotals.Dinheiro || 0) + supplies - withdrawals;
