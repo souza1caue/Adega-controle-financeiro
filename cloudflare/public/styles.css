@@ -158,3 +158,8 @@ button,.button,.product-tile{touch-action:manipulation}
 .payment-choice input:focus-visible+span{outline:3px solid #fff;outline-offset:3px}
 .payment-choice:hover span{border-color:#e5b74c}
 @media(max-width:380px){.payment-choices{gap:8px}.payment-choice span{padding:12px 10px;font-size:13px}}
+
+.checkout-section{border:0;padding:0;margin:0;min-width:0}
+.checkout-kind-choices{grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:16px}
+.loss-reason-choices{grid-template-columns:repeat(2,minmax(0,1fr))}
+.checkout-kind-choices .payment-choice span{padding-left:8px;padding-right:8px}
