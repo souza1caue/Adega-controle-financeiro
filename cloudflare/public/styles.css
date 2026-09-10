@@ -149,7 +149,8 @@ button,.button,.product-tile{touch-action:manipulation}
 @media(max-width:650px){.quick-stock-row>.quick-stock-template{grid-column:1}.quick-stock-template small{overflow-wrap:anywhere}}
 
 /* One-tap payment selection, with native keyboard and form behavior. */
-.payment-choices{display:flex;justify-content:flex-start;gap:10px;flex-wrap:nowrap}
+.checkout-payment-fields{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
+.payment-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:10px}
 .payment-choices .payment-choice{position:relative;display:block;cursor:pointer;margin:0;min-width:0}
 .payment-choice input[type="radio"]{position:absolute;opacity:0;width:1px;height:1px;padding:0;margin:0}
 .payment-choice span{display:flex;align-items:center;justify-content:center;min-height:48px;padding:12px 16px;border:2px solid var(--line);border-radius:10px;background:#141510;color:var(--text,#fff);font-size:14px;font-weight:600;white-space:nowrap}
