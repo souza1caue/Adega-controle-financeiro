@@ -147,3 +147,13 @@ button,.button,.product-tile{touch-action:manipulation}
 .quick-stock-template{grid-column:1/-1}.stock-replenish-shortcuts{margin:16px 0}.stock-replenish-shortcuts .actions{flex-wrap:wrap}.stock-replenish-shortcuts button{white-space:normal}.stock-replenish-shortcuts p{font-weight:600}
 
 @media(max-width:650px){.quick-stock-row>.quick-stock-template{grid-column:1}.quick-stock-template small{overflow-wrap:anywhere}}
+
+/* One-tap payment selection, with native keyboard and form behavior. */
+.payment-choices{display:flex;justify-content:flex-start;gap:10px;flex-wrap:nowrap}
+.payment-choices .payment-choice{position:relative;display:block;cursor:pointer;margin:0;min-width:0}
+.payment-choice input[type="radio"]{position:absolute;opacity:0;width:1px;height:1px;padding:0;margin:0}
+.payment-choice span{display:flex;align-items:center;justify-content:center;min-height:48px;padding:12px 16px;border:2px solid var(--line);border-radius:10px;background:#141510;color:var(--text,#fff);font-size:14px;font-weight:600;white-space:nowrap}
+.payment-choice input:checked+span{border-color:#e5b74c;background:#e5b74c;color:#171710}
+.payment-choice input:focus-visible+span{outline:3px solid #fff;outline-offset:3px}
+.payment-choice:hover span{border-color:#e5b74c}
+@media(max-width:380px){.payment-choices{gap:8px}.payment-choice span{padding:12px 10px;font-size:13px}}
