@@ -314,6 +314,12 @@ async function mutate(request, env) {
     if (!allowed.has(action)) return reply({ error: `Este dispositivo possui acesso somente ${device.role === "front" ? "à Frente de Caixa" : "à Cozinha"}.` }, 403);
   } else if (!admin) return reply({ error: "Faça login para acessar o sistema." }, 401);
   if (adminActions.has(action) && !admin) return reply({ error: "Acesso administrativo necessário." }, 401);
+  // Keep audit attribution without asking the operator to type a name.
+  const operationOrigin = staffToken ? await orderOrigin(db, staffToken) : null;
+  const automaticResponsible = operationOrigin?.source_name || device?.label || "Caixa principal";
+  for (const field of ["responsible", "opened_by", "closed_by"]) {
+    input[field] = typeof input[field] === "string" && input[field].trim() ? input[field].trim() : automaticResponsible;
+  }
   const id = input.id || uid();
 
   if (action === "device.create") {
