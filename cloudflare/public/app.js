@@ -644,7 +644,7 @@ document.addEventListener("change",event=>{
   }
 });
 const quickStockCategories = {
-  Bebida: {title:"Bebidas", hint:"Cervejas, refrigerantes, água, destilados e gelo.", placeholder:"Ex.: Skol latão 473 ml", units:[["un","Unidades"],["lata","Latas"],["latão","Latões"],["garrafa","Garrafas"],["pacote","Pacotes de gelo"],["L","Litros"],["ml","Mililitros"]]},
+  Bebida: {title:"Bebidas", hint:"Cervejas, refrigerantes, água, destilados e gelo.", placeholder:"Ex.: Skol latão 473 ml", units:[["un","Unidades"],["fardo","Fardos"],["lata","Latas"],["latão","Latões"],["garrafa","Garrafas"],["pacote","Pacotes de gelo"],["L","Litros"],["ml","Mililitros"]]},
   Comida: {title:"Comidas e ingredientes", hint:"Produtos prontos por unidade; ingredientes por peso.", placeholder:"Ex.: Espetinho de carne", units:[["un","Unidades"],["kg","Quilos (kg)"],["g","Gramas (g)"],["pacote","Pacotes"],["L","Litros"],["ml","Mililitros"]]},
   "Descartável": {title:"Embalagens e descartáveis", hint:"Copos, sacolas, guardanapos e embalagens.", placeholder:"Ex.: Copo 300 ml", units:[["un","Unidades"],["pacote","Pacotes"]]}
 };
@@ -665,7 +665,13 @@ function quickStockRow(category="Bebida"){
   </div>`;
 }
 function updateQuickStockUnit(row){
-  const unit=row.querySelector("[data-quick-unit]").value;
+  const unit=row.querySelector("[data-quick-unit]").value,bundled=unit==="fardo";
+  const packageField=row.querySelector("[data-quick-package-field]"),packageInput=row.querySelector("[data-quick-package]"),quantityInput=row.querySelector("[data-quick-quantity]");
+  if(bundled && packageField.parentElement!==row)row.querySelector(".quick-stock-options").before(packageField);
+  else if(!bundled && packageField.parentElement===row)row.querySelector(".quick-stock-options-grid").append(packageField);
+  packageField.querySelector("label").textContent=bundled?"Unidades em cada fardo":"Unidades por embalagem na pr\u00f3xima compra";
+  packageField.querySelector("small").textContent=bundled?"Ex.: 12 latas em cada fardo.":"N\u00e3o multiplica a quantidade cadastrada agora.";
+  quantityInput.step=bundled?"1":".001";
   const labels={un:["unidades","unidade"],lata:["latas","lata"],"latão":["latões","latão"],garrafa:["garrafas","garrafa"],pacote:["pacotes","pacote"],kg:["kg","kg"],g:["g","g"],L:["litros","litro"],ml:["ml","ml"]};
   const [plural,singular]=labels[unit]||labels.un,measured=["kg","g","L","ml"].includes(unit);
   row.querySelector("[data-quick-quantity-label]").textContent=`Quantidade em ${plural}`;
@@ -674,6 +680,22 @@ function updateQuickStockUnit(row){
   row.querySelector("[data-quick-count-hint]").textContent=measured?`Informe o total em ${plural}. Ex.: 2,5.`:unit==="pacote"?"Conte pacotes inteiros; use essa mesma medida no cardápio.":`Conte ${plural} avulsos, sem contar caixas ou fardos.`;
   row.querySelector("[data-quick-package-field]").hidden=measured;
   if(measured)row.querySelector("[data-quick-package]").value="1";
+  if(bundled){
+    row.querySelector("[data-quick-quantity-label]").textContent="Quantidade de fardos";
+    const count=Number(quantityInput.value),size=Number(packageInput.value);
+    row.querySelector("[data-quick-count-hint]").textContent=Number.isInteger(count)&&count>=0&&Number.isInteger(size)&&size>0?`${count} fardo(s) \u00d7 ${size} unidades = ${count*size} unidades no estoque.`:"Informe quantos fardos e quantas unidades h\u00e1 em cada um.";
+  }
+}
+document.addEventListener("input",event=>{
+  if(event.target.matches("[data-quick-quantity],[data-quick-package]"))updateQuickStockUnit(event.target.closest(".quick-stock-row"));
+});
+function quickStockEntry(unit,quantity,unitsPerPackage){
+  if(unit!=="fardo")return{unit,package_quantity:quantity,default_units_per_package:unitsPerPackage};
+  if(!Number.isInteger(quantity)||quantity<0)throw new Error("Informe uma quantidade inteira de fardos.");
+  if(!Number.isInteger(unitsPerPackage)||unitsPerPackage<1)throw new Error("Informe quantas unidades existem em cada fardo.");
+  const total=quantity*unitsPerPackage;
+  if(!Number.isSafeInteger(total))throw new Error("A quantidade total de unidades \u00e9 muito grande.");
+  return{unit:"un",package_quantity:total,default_units_per_package:unitsPerPackage};
 }
 function quickStockDialog(){
   openModal(`<form data-form="quick-stock"><span class="eyebrow">Cadastro por categoria</span><h2>Cadastrar itens no estoque</h2><p class="muted">Escolha a seção, informe o nome e quanto tem hoje. O custo pode ficar para depois.</p>
@@ -946,7 +968,7 @@ document.addEventListener("submit",async event=>{
         if(!name){if(quantity||cost!==""||minimum)throw new Error("Informe o nome do produto na linha preenchida.");return null}
         if(!Number.isFinite(quantity)||quantity<0)throw new Error(`Informe uma quantidade válida para ${name}.`);
         if(cost!==""&&(!Number.isFinite(Number(cost))||Number(cost)<0))throw new Error(`Informe um custo válido para ${name}.`);
-        return{name,default_units_per_package:Number(row.querySelector("[data-quick-package]").value),stock_category:row.querySelector("[data-quick-category]").value,unit:row.querySelector("[data-quick-unit]").value,stock_minimum:minimum,package_quantity:quantity,package_cost:cost===""?"":Number(cost)};
+        return{name,...quickStockEntry(row.querySelector("[data-quick-unit]").value,quantity,Number(row.querySelector("[data-quick-package]").value)),stock_category:row.querySelector("[data-quick-category]").value,stock_minimum:minimum,package_cost:cost===""?"":Number(cost)};
       }).filter(Boolean);
       if(!items.length)throw new Error("Preencha pelo menos um produto.");
       const submit=form.querySelector("button[type='submit']");if(submit.disabled)return;submit.disabled=true;submit.textContent="Salvando...";
