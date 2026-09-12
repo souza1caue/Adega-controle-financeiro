@@ -477,13 +477,22 @@ async function mutate(request, env) {
     let created = 0, totalUnits = 0, totalCost = 0;
     for (const [index, line] of lines.entries()) {
       if (quickCreate) {
-        if (line.id) throw new Error("Use Registrar compra para adicionar saldo a um item existente.");
         required(line.name, `o nome do produto ${index + 1}`);
         const key = normalizeName(line.name);
-        if (usedNames.has(key)) throw new Error(`${line.name.trim()} já está cadastrado ou repetido na lista. Use Registrar compra para adicionar saldo.`);
-        usedNames.add(key);
-        line.purchase_unit = "direct";
-        line.units_per_package = 1;
+        if (line.id) {
+          const selected = await readRecord(db, "stock_items", line.id);
+          if (!selected) throw new Error(`Produto ${index + 1} não encontrado.`);
+          if (normalizeName(selected.name) !== key) throw new Error("O nome não corresponde ao item selecionado no estoque.");
+          if (line.unit && line.unit !== selected.unit && !(line.unit === "un" && selected.unit == null)) throw new Error("A unidade não corresponde ao item selecionado no estoque.");
+          if (line.stock_category && selected.stock_category && line.stock_category !== selected.stock_category) throw new Error("A categoria não corresponde ao item selecionado no estoque.");
+          line.purchase_unit = Number(line.default_units_per_package || 1) > 1 ? "package" : "direct";
+          line.units_per_package = 1;
+        } else {
+          if (usedNames.has(key)) throw new Error(`${line.name.trim()} já está cadastrado ou repetido na lista. Selecione o item existente para adicionar saldo.`);
+          usedNames.add(key);
+          line.purchase_unit = "direct";
+          line.units_per_package = 1;
+        }
       }
       const itemId = line.id || uid();
       if (usedIds.has(itemId)) throw new Error("O mesmo produto foi adicionado mais de uma vez. Edite a linha existente.");
@@ -526,7 +535,7 @@ async function mutate(request, env) {
         item.units_per_package = savedUnits;
         item.purchase_unit = savedUnits > 1 ? "package" : "direct";
       }
-      if (!quickCreate) item.purchase_count = Number(item.purchase_count || 0) + 1;
+      if (!quickCreate || line.id) item.purchase_count = Number(item.purchase_count || 0) + 1;
       if (bulkPackage) { item.package_size = Number(line.content_per_unit); item.package_measure = contentUnit; }
       item.updated_at = now();
       if (entryCost != null) {

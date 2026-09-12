@@ -45,3 +45,21 @@ test('server rejects missing cost atomically and accepts total-only registration
   const f=fixture();assert.equal((await f.call({action:'stock.quick.create',items:[{name:'Total only',unit:'kg',package_quantity:2.5,total_paid:50}]})).status,200);
   assert.equal(f.records('stock_items').find(item=>item.name==='Total only').cost_price,20);
 });
+
+test('selecting an existing item adds stock using its saved measure and bundle size',async()=>{
+  const f=fixture();
+  const existing=f.records('stock_items').find(item=>item.id==='beer');
+  existing.purchase_unit='package';existing.units_per_package=12;existing.stock_category='Bebida';
+  f.put('stock_items','beer',existing);f.sqlite.exec("UPDATE stock_balances SET quantity=5 WHERE id='beer'");
+  const result=await f.call({action:'stock.quick.create',items:[{id:'beer',name:existing.name,stock_category:'Bebida',unit:'un',package_quantity:36,default_units_per_package:12,package_cost:2,total_paid:72}]});
+  assert.equal(result.status,200,JSON.stringify(result));
+  assert.equal(f.balance('beer'),41);assert.equal(result.created,0);assert.equal(result.total_units,36);assert.equal(result.total_cost,72);
+  const saved=f.records('stock_items').find(item=>item.id==='beer');assert.equal(saved.units_per_package,12);assert.equal(saved.purchase_count,1);
+});
+
+test('existing item selection must match an actual saved item and its name',async()=>{
+  for(const item of [{id:'missing',name:'Cerveja',package_quantity:1,package_cost:2},{id:'beer',name:'Different item',package_quantity:1,package_cost:2},{id:'beer',name:'Cerveja',unit:'kg',package_quantity:1,package_cost:2}]){
+    const f=fixture(),result=await f.call({action:'stock.quick.create',items:[item]});
+    assert.equal(result.status,400);assert.equal(f.balance('beer'),0);assert.equal(f.records('stock_movements').length,0);
+  }
+});

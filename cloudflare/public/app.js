@@ -626,8 +626,10 @@ document.addEventListener("click",event=>{
 });
 document.addEventListener("change",event=>{
   if(event.target.matches("[data-quick-unit]"))updateQuickStockUnit(event.target.form);
+  if(event.target.matches("[data-quick-existing]"))selectExistingQuickStockItem(event.target.form,event.target.value);
   if(event.target.matches("[data-quick-category]")){
     const form=event.target.form,config=quickStockCategories[event.target.value],unit=form.querySelector("[data-quick-unit]"),previous=unit.value;
+    form.querySelector("[data-quick-existing]").value="";form.querySelector("[data-quick-name]").value="";
     unit.innerHTML=config.units.map(([value,label])=>`<option value="${value}">${label}</option>`).join("");
     if(config.units.some(([value])=>value===previous))unit.value=previous;
     form.querySelector("[data-quick-name]").placeholder=config.placeholder;updateQuickStockUnit(form);
@@ -653,7 +655,7 @@ const quickStockMeasures={un:["unidades","unidade"],fardo:["fardos","fardo"],lat
 function quickStockRow(category="Bebida"){
   return `<form data-form="quick-stock" class="quick-stock-editor" data-cost-source="unit">
     <div class="field"><label for="quick-category">Categoria</label><select id="quick-category" data-quick-category>${Object.entries(quickStockCategories).map(([value,config])=>`<option value="${esc(value)}" ${value===category?'selected':''}>${config.title}</option>`).join("")}</select></div>
-    <div class="field"><label for="quick-name">Nome do item</label><input id="quick-name" data-quick-name required placeholder="Ex.: Skol latão 473 ml" autocomplete="off"></div>
+    <div class="quick-stock-name-choice"><div class="field"><label for="quick-name">Nome do item</label><input id="quick-name" data-quick-name required placeholder="Ex.: Skol latão 473 ml" autocomplete="off"></div><div class="field"><label for="quick-existing">Ou escolher item cadastrado</label><select id="quick-existing" data-quick-existing><option value="">Novo item</option>${entries(data.stock_items).sort((a,b)=>a[1].name.localeCompare(b[1].name)).map(([id,item])=>`<option value="${esc(id)}">${esc(item.name)} · ${esc(quickStockCategories[item.stock_category]?.title||item.stock_category||"Estoque")} · ${esc(stockUnitLabel(item.unit||"un",1))}</option>`).join("")}</select></div></div>
     <div class="quick-stock-editor-grid">
       <div class="field"><label for="quick-unit">Como você conta?</label><select id="quick-unit" data-quick-unit>${quickStockCategories[category].units.map(([value,label])=>`<option value="${value}">${label}</option>`).join("")}</select></div>
       <div class="field"><label for="quick-quantity" data-quick-quantity-label>Quantidade em unidades</label><input id="quick-quantity" data-quick-quantity type="number" min="0" step=".001" value="0" inputmode="decimal" required></div>
@@ -684,7 +686,7 @@ function quickStockCost(unit,quantity,unitsPerPackage,cost,total,source="unit"){
   return{...entry,package_cost:unit==="fardo"?price/unitsPerPackage:price,...(quantity>0?{total_paid:sum}:{}),display_cost:price,display_total:sum};
 }
 function updateQuickStockUnit(form){
-  const unit=form.querySelector("[data-quick-unit]").value,bundled=unit==="fardo",measured=["kg","g","L","ml"].includes(unit),[plural,singular]=quickStockMeasures[unit];
+  const unit=form.querySelector("[data-quick-unit]").value,bundled=unit==="fardo",measured=["kg","g","L","ml"].includes(unit),[plural,singular]=quickStockMeasures[unit]||[stockUnitLabel(unit,2),stockUnitLabel(unit,1)];
   const quantity=form.querySelector("[data-quick-quantity]"),bundle=form.querySelector("[data-quick-bundle]"),pack=form.querySelector("[data-quick-package]");
   quantity.step=bundled?"1":".001";
   form.querySelector("[data-quick-quantity-label]").textContent=bundled?"Quantidade de fardos":`Quantidade em ${plural}`;
@@ -703,23 +705,38 @@ function updateQuickStockCosts(form,source){
   if(form.dataset.costSource==="total")cost.value=total.value!==""&&quantity>0?String(Number((Number(total.value)/quantity).toFixed(6))):"";
   else total.value=cost.value!==""&&Number.isFinite(quantity)?(Number(cost.value)*quantity).toFixed(2):"";
 }
+function selectExistingQuickStockItem(form,id){
+  const item=data.stock_items[id],category=item?.stock_category||"Bebida";
+  form.querySelector("[data-quick-name]").value=item?.name||"";
+  form.querySelector("[data-quick-category]").value=category in quickStockCategories?category:"Bebida";
+  const categoryConfig=quickStockCategories[form.querySelector("[data-quick-category]").value],unit=form.querySelector("[data-quick-unit]");
+  const options=categoryConfig.units.slice();
+  if(item?.unit&&!options.some(([value])=>value===item.unit))options.push([item.unit,stockUnitLabel(item.unit,2)]);
+  if(item&&Number(item.units_per_package)>1&&item.unit==="un"&&form.querySelector("[data-quick-category]").value==="Bebida"&&!options.some(([value])=>value==="fardo"))options.splice(1,0,["fardo","Fardos"]);
+  unit.innerHTML=options.map(([value,label])=>`<option value="${esc(value)}">${esc(label)}</option>`).join("");unit.value=item?.unit||options[0][0];
+  form.querySelector("[data-quick-name]").placeholder=categoryConfig.placeholder;
+  form.querySelector("[data-quick-bundle]").value=String(Math.max(1,Number(item?.units_per_package)||12));
+  form.querySelector("[data-quick-package]").value=String(Math.max(1,Number(item?.units_per_package)||1));
+  const cost=form.querySelector("[data-quick-cost]"),total=form.querySelector("[data-quick-total]");cost.value=item?String(Number(item.cost_price||0)):"";total.value="";form.dataset.costSource="unit";
+  updateQuickStockUnit(form);
+}
 function resetQuickStockEditor(category){
   const host=modalBody.querySelector("[data-quick-editor-host]");host.innerHTML=quickStockRow(category);quickStockEditing=-1;updateQuickStockUnit(host.querySelector("form"));
 }
 function collectQuickStockDraft(form){
   const value=key=>form.querySelector(`[data-quick-${key}]`).value;
-  return{name:value("name").trim(),category:value("category"),unit:value("unit"),quantity:Number(value("quantity")),bundle:Number(value("bundle")),pack:Number(value("package")),minimum:Number(value("minimum")||0),cost:value("cost"),total:value("total"),source:form.dataset.costSource};
+  return{id:value("existing"),name:value("name").trim(),category:value("category"),unit:value("unit"),quantity:Number(value("quantity")),bundle:Number(value("bundle")),pack:Number(value("package")),minimum:Number(value("minimum")||0),cost:value("cost"),total:value("total"),source:form.dataset.costSource};
 }
 function addQuickStockDraft(form){
   if(!form.reportValidity())return false;
   const draft=collectQuickStockDraft(form),normalize=name=>name.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLocaleLowerCase("pt-BR");
   if(!draft.name)throw new Error("Informe o nome do item.");
-  if(pendingQuickStockItems.some((item,index)=>index!==quickStockEditing&&normalize(item.draft.name)===normalize(draft.name))||entries(data.stock_items).some(([,item])=>normalize(item.name)===normalize(draft.name)))throw new Error("Este item já está cadastrado ou adicionado à lista. Para repor o estoque, use Registrar compra.");
+  if(pendingQuickStockItems.some((item,index)=>index!==quickStockEditing&&(draft.id?item.draft.id===draft.id:!item.draft.id&&normalize(item.draft.name)===normalize(draft.name)))||entries(data.stock_items).some(([id,item])=>id!==draft.id&&normalize(item.name)===normalize(draft.name)))throw new Error("Este item já está adicionado à lista. Edite a linha existente.");
   if(quickStockEditing<0&&pendingQuickStockItems.length>=50)throw new Error("Salve estes 50 itens antes de adicionar outros.");
   const size=draft.unit==="fardo"?draft.bundle:["kg","g","L","ml"].includes(draft.unit)?1:draft.pack;
   let costs;
   try{costs=quickStockCost(draft.unit,draft.quantity,size,draft.cost,draft.total,draft.source)}catch(error){const field=form.querySelector(draft.source==="total"?"[data-quick-total]":"[data-quick-cost]");field.setCustomValidity(error.message);field.reportValidity();return false}
-  const item={draft,payload:{name:draft.name,stock_category:draft.category,stock_minimum:draft.minimum,...costs}};
+  const item={draft,payload:{...(draft.id?{id:draft.id}:{}),name:draft.name,stock_category:draft.category,stock_minimum:draft.minimum,...costs}};
   if(quickStockEditing<0)pendingQuickStockItems.push(item);else pendingQuickStockItems[quickStockEditing]=item;
   resetQuickStockEditor(draft.category);renderQuickStockQueue();modalBody.querySelector("[data-quick-name]").focus();return true;
 }
@@ -735,7 +752,7 @@ function editQuickStockDraft(index){
   if(quickStockEditing>=0||unsaved.name||unsaved.quantity||unsaved.cost!==""||unsaved.total!==""||unsaved.minimum){if(!addQuickStockDraft(current))return}
   const {draft}=pendingQuickStockItems[index];resetQuickStockEditor(draft.category);quickStockEditing=index;
   const form=modalBody.querySelector("[data-form='quick-stock']");
-  for(const [key,value]of Object.entries({name:draft.name,unit:draft.unit,quantity:draft.quantity,bundle:draft.bundle,package:draft.pack,minimum:draft.minimum,cost:draft.cost,total:draft.total}))form.querySelector(`[data-quick-${key}]`).value=value;
+  for(const [key,value]of Object.entries({name:draft.name,existing:draft.id,unit:draft.unit,quantity:draft.quantity,bundle:draft.bundle,package:draft.pack,minimum:draft.minimum,cost:draft.cost,total:draft.total}))form.querySelector(`[data-quick-${key}]`).value=value;
   form.dataset.costSource=draft.source;updateQuickStockUnit(form);form.querySelector("[data-quick-add]").textContent="Atualizar item na lista";form.querySelector("[data-quick-cancel-edit]").hidden=false;form.querySelector("[data-quick-name]").focus();
 }
 async function saveQuickStockQueue(button){
