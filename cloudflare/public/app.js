@@ -210,8 +210,8 @@ async function mutate(payload, admin=false){
   await load(false); toast("Alteração salva."); return result;
 }
 function toast(message,error=false){const box=document.querySelector("#toast");box.textContent=fiadoLabels(message);box.className=error?"show error":"show";setTimeout(()=>box.className="",2800)}
-function openModal(html){modalBody.innerHTML=`<div class="modal-content">${fiadoLabels(String(html).replace(/Cadernetas/g,"Fiado").replace(/cadernetas/g,"fiado").replace(/Caderneta/g,"Fiado").replace(/caderneta/g,"fiado"))}</div>`;if(!modal.open)modal.showModal()}
-function closeModal(){clearTimeout(searchRenderTimer);searchRenderTimer=null;modal.close();modal.classList.remove("tab-order-dialog");modalBody.innerHTML=""}
+function openModal(html){modal.classList.remove("quick-stock-dialog");modalBody.innerHTML=`<div class="modal-content">${fiadoLabels(String(html).replace(/Cadernetas/g,"Fiado").replace(/cadernetas/g,"fiado").replace(/Caderneta/g,"Fiado").replace(/caderneta/g,"fiado"))}</div>`;if(!modal.open)modal.showModal()}
+function closeModal(){clearTimeout(searchRenderTimer);searchRenderTimer=null;modal.close();modal.classList.remove("tab-order-dialog","quick-stock-dialog");modalBody.innerHTML=""}
 function heading(title,action=""){return `<div class="section-head"><div><div class="eyebrow">${esc(module||"Sistema")}</div><h1>${esc(title)}</h1></div>${action}</div>`}
 function empty(text){return `<div class="empty">${esc(text)}</div>`}
 
@@ -625,13 +625,13 @@ document.addEventListener("click",event=>{
   if(button){preservePurchaseMeta();purchaseLineDialog("",button.dataset.replenishItem)}
 });
 document.addEventListener("change",event=>{
-  if(event.target.matches("[data-stock-template]")){
-    const template=stockTemplates[event.target.value];if(!template)return;
-    const row=event.target.closest(".quick-stock-row");
-    for(const [key,value] of Object.entries({name:template.name,unit:template.unit,category:template.category,package:template.units}))row.querySelector(`[data-quick-${key}]`).value=value;
-    updateQuickStockUnit(row);
+  if(event.target.matches("[data-quick-unit]"))updateQuickStockUnit(event.target.form);
+  if(event.target.matches("[data-quick-category]")){
+    const form=event.target.form,config=quickStockCategories[event.target.value],unit=form.querySelector("[data-quick-unit]"),previous=unit.value;
+    unit.innerHTML=config.units.map(([value,label])=>`<option value="${value}">${label}</option>`).join("");
+    if(config.units.some(([value])=>value===previous))unit.value=previous;
+    form.querySelector("[data-quick-name]").placeholder=config.placeholder;updateQuickStockUnit(form);
   }
-  if(event.target.matches("[data-quick-unit]"))updateQuickStockUnit(event.target.closest(".quick-stock-row"));
   if(event.target.matches("[data-purchase-template]")){
     const template=stockTemplates[event.target.value];if(!template)return;
     const form=event.target.form;form.elements.name.value=template.name;form.elements.stock_type.value=template.unit==="kg"?"weight":"unit";
@@ -648,63 +648,112 @@ const quickStockCategories = {
   Comida: {title:"Comidas e ingredientes", hint:"Produtos prontos por unidade; ingredientes por peso.", placeholder:"Ex.: Espetinho de carne", units:[["un","Unidades"],["kg","Quilos (kg)"],["g","Gramas (g)"],["pacote","Pacotes"],["L","Litros"],["ml","Mililitros"]]},
   "Descartável": {title:"Embalagens e descartáveis", hint:"Copos, sacolas, guardanapos e embalagens.", placeholder:"Ex.: Copo 300 ml", units:[["un","Unidades"],["pacote","Pacotes"]]}
 };
+let pendingQuickStockItems=[],quickStockEditing=-1;
+const quickStockMeasures={un:["unidades","unidade"],fardo:["fardos","fardo"],lata:["latas","lata"],"latão":["latões","latão"],garrafa:["garrafas","garrafa"],pacote:["pacotes","pacote"],kg:["kg","kg"],g:["g","g"],L:["litros","litro"],ml:["ml","ml"]};
 function quickStockRow(category="Bebida"){
-  const config=quickStockCategories[category]||quickStockCategories.Bebida;
-  const templates=stockTemplates.map((item,index)=>({...item,index})).filter(item=>item.category===category);
-  return `<div class="quick-stock-row"><input type="hidden" data-quick-category value="${esc(category)}">
-    <div class="field quick-stock-name"><label>Nome do item</label><input data-quick-name placeholder="${esc(config.placeholder)}" aria-label="Nome do item"></div>
-    <div class="field"><label>Como você conta?</label><select data-quick-unit aria-label="Como você conta?">${config.units.map(([value,label])=>`<option value="${value}">${label}</option>`).join("")}</select></div>
-    <div class="field"><label data-quick-quantity-label>Quantidade em unidades</label><input data-quick-quantity type="number" min="0" step=".001" value="0" inputmode="decimal" aria-label="Quantidade atual"><small data-quick-count-hint>Informe o total avulso, sem contar caixas ou fardos.</small></div>
-    <button type="button" class="danger quick-stock-remove" data-remove-quick-stock aria-label="Remover item">×</button>
-    <details class="quick-stock-options"><summary>Custo e outras opções</summary><div class="quick-stock-options-grid">
-      <div class="field"><label>Modelo pronto (opcional)</label><select data-stock-template aria-label="Modelo pronto"><option value="">Preencher livremente</option>${templates.map(item=>`<option value="${item.index}">${esc(item.name)}</option>`).join("")}</select></div>
-      <div class="field"><label data-quick-cost-label>Custo por unidade (opcional)</label><input data-quick-cost type="number" min="0" step=".01" placeholder="Pode preencher depois" inputmode="decimal" aria-label="Custo por unidade"></div>
-      <div class="field"><label>Estoque mínimo (opcional)</label><input data-quick-minimum type="number" min="0" step=".001" value="0" inputmode="decimal" aria-label="Estoque mínimo"></div>
-      <div class="field" data-quick-package-field><label>Unidades por embalagem na próxima compra</label><input data-quick-package type="number" min="1" step="1" value="1" required><small>Não multiplica a quantidade cadastrada agora.</small></div>
-    </div></details>
-  </div>`;
+  return `<form data-form="quick-stock" class="quick-stock-editor" data-cost-source="unit">
+    <div class="field"><label for="quick-category">Categoria</label><select id="quick-category" data-quick-category>${Object.entries(quickStockCategories).map(([value,config])=>`<option value="${esc(value)}" ${value===category?'selected':''}>${config.title}</option>`).join("")}</select></div>
+    <div class="field"><label for="quick-name">Nome do item</label><input id="quick-name" data-quick-name required placeholder="Ex.: Skol latão 473 ml" autocomplete="off"></div>
+    <div class="quick-stock-editor-grid">
+      <div class="field"><label for="quick-unit">Como você conta?</label><select id="quick-unit" data-quick-unit>${quickStockCategories[category].units.map(([value,label])=>`<option value="${value}">${label}</option>`).join("")}</select></div>
+      <div class="field"><label for="quick-quantity" data-quick-quantity-label>Quantidade em unidades</label><input id="quick-quantity" data-quick-quantity type="number" min="0" step=".001" value="0" inputmode="decimal" required></div>
+      <div class="field" data-quick-bundle-field hidden><label for="quick-bundle">Unidades em cada fardo</label><input id="quick-bundle" data-quick-bundle type="number" min="1" step="1" value="12" inputmode="numeric" disabled required></div>
+    </div><p class="quick-stock-count" data-quick-count-hint aria-live="polite"></p>
+    <div class="quick-stock-costs"><div class="field"><label for="quick-cost" data-quick-cost-label>Custo por unidade</label><input id="quick-cost" data-quick-cost type="number" min="0" step="any" placeholder="R$ 0,00" inputmode="decimal"></div><div class="field"><label for="quick-total">Custo total dos itens</label><input id="quick-total" data-quick-total type="number" min="0" step=".01" placeholder="R$ 0,00" inputmode="decimal"></div><small>Informe um dos valores. O outro será calculado automaticamente.</small></div>
+    <div class="quick-stock-editor-grid"><div class="field"><label for="quick-minimum" data-quick-minimum-label>Estoque mínimo em unidades</label><input id="quick-minimum" data-quick-minimum type="number" min="0" step=".001" value="0" inputmode="decimal"></div><div class="field" data-quick-package-field><label for="quick-package">Unidades por embalagem na próxima compra</label><input id="quick-package" data-quick-package type="number" min="1" step="1" value="1" inputmode="numeric" required></div></div>
+    <div class="quick-stock-editor-actions"><button type="button" data-quick-cancel-edit hidden>Cancelar edição</button><button type="submit" class="primary" data-quick-add>Adicionar à lista →</button></div>
+  </form>`;
 }
-function updateQuickStockUnit(row){
-  const unit=row.querySelector("[data-quick-unit]").value,bundled=unit==="fardo";
-  const packageField=row.querySelector("[data-quick-package-field]"),packageInput=row.querySelector("[data-quick-package]"),quantityInput=row.querySelector("[data-quick-quantity]");
-  if(bundled && packageField.parentElement!==row)row.querySelector(".quick-stock-options").before(packageField);
-  else if(!bundled && packageField.parentElement===row)row.querySelector(".quick-stock-options-grid").append(packageField);
-  packageField.querySelector("label").textContent=bundled?"Unidades em cada fardo":"Unidades por embalagem na pr\u00f3xima compra";
-  packageField.querySelector("small").textContent=bundled?"Ex.: 12 latas em cada fardo.":"N\u00e3o multiplica a quantidade cadastrada agora.";
-  quantityInput.step=bundled?"1":".001";
-  const labels={un:["unidades","unidade"],lata:["latas","lata"],"latão":["latões","latão"],garrafa:["garrafas","garrafa"],pacote:["pacotes","pacote"],kg:["kg","kg"],g:["g","g"],L:["litros","litro"],ml:["ml","ml"]};
-  const [plural,singular]=labels[unit]||labels.un,measured=["kg","g","L","ml"].includes(unit);
-  row.querySelector("[data-quick-quantity-label]").textContent=`Quantidade em ${plural}`;
-  row.querySelector("[data-quick-cost-label]").textContent=`Custo por ${singular} (opcional)`;
-  row.querySelector("[data-quick-cost]").setAttribute("aria-label",`Custo por ${singular}`);
-  row.querySelector("[data-quick-count-hint]").textContent=measured?`Informe o total em ${plural}. Ex.: 2,5.`:unit==="pacote"?"Conte pacotes inteiros; use essa mesma medida no cardápio.":`Conte ${plural} avulsos, sem contar caixas ou fardos.`;
-  row.querySelector("[data-quick-package-field]").hidden=measured;
-  if(measured)row.querySelector("[data-quick-package]").value="1";
-  if(bundled){
-    row.querySelector("[data-quick-quantity-label]").textContent="Quantidade de fardos";
-    const count=Number(quantityInput.value),size=Number(packageInput.value);
-    row.querySelector("[data-quick-count-hint]").textContent=Number.isInteger(count)&&count>=0&&Number.isInteger(size)&&size>0?`${count} fardo(s) \u00d7 ${size} unidades = ${count*size} unidades no estoque.`:"Informe quantos fardos e quantas unidades h\u00e1 em cada um.";
-  }
-}
-document.addEventListener("input",event=>{
-  if(event.target.matches("[data-quick-quantity],[data-quick-package]"))updateQuickStockUnit(event.target.closest(".quick-stock-row"));
-});
 function quickStockEntry(unit,quantity,unitsPerPackage){
   if(unit!=="fardo")return{unit,package_quantity:quantity,default_units_per_package:unitsPerPackage};
   if(!Number.isInteger(quantity)||quantity<0)throw new Error("Informe uma quantidade inteira de fardos.");
   if(!Number.isInteger(unitsPerPackage)||unitsPerPackage<1)throw new Error("Informe quantas unidades existem em cada fardo.");
   const total=quantity*unitsPerPackage;
-  if(!Number.isSafeInteger(total))throw new Error("A quantidade total de unidades \u00e9 muito grande.");
+  if(!Number.isSafeInteger(total))throw new Error("A quantidade total de unidades é muito grande.");
   return{unit:"un",package_quantity:total,default_units_per_package:unitsPerPackage};
 }
-function quickStockDialog(){
-  openModal(`<form data-form="quick-stock"><span class="eyebrow">Cadastro por categoria</span><h2>Cadastrar itens no estoque</h2><p class="muted">Escolha a seção, informe o nome e quanto tem hoje. O custo pode ficar para depois.</p>
-    <div class="quick-stock-sections">${Object.entries(quickStockCategories).map(([category,config])=>`<section class="quick-stock-section" data-quick-section="${esc(category)}"><header><div><h3>${config.title}</h3><p class="muted">${config.hint}</p></div><button type="button" data-add-quick-stock="${esc(category)}">+ Adicionar</button></header><div class="quick-stock-list" data-quick-stock-list>${category==="Bebida"?quickStockRow(category):""}</div></section>`).join("")}</div>
-    <p class="muted">Pode começar com quantidade zero. Para um item que já existe, use Registrar compra. Depois, vincule os novos itens no Cardápio para dar baixa nas vendas.</p><div class="quick-stock-footer"><button type="submit" class="primary checkout-button">Salvar itens</button></div></form>`);
-  const form=modalBody.querySelector("[data-form='quick-stock']");
-  form.addEventListener("invalid",event=>{const details=event.target.closest("details");if(details)details.open=true},true);
-  form.querySelector("[data-quick-name]")?.focus();
+function quickStockCost(unit,quantity,unitsPerPackage,cost,total,source="unit"){
+  const hasCost=cost!==""&&cost!=null,hasTotal=total!==""&&total!=null;
+  if(!hasCost&&!hasTotal)throw new Error("Informe o custo por medida ou o custo total.");
+  if(!Number.isFinite(quantity)||quantity<0)throw new Error("Informe uma quantidade válida.");
+  if(hasCost&&(!Number.isFinite(Number(cost))||Number(cost)<0)||hasTotal&&(!Number.isFinite(Number(total))||Number(total)<0))throw new Error("Informe um custo válido, igual ou maior que zero.");
+  const useTotal=hasTotal&&(source==="total"||!hasCost);
+  if(useTotal&&quantity===0)throw new Error("Para quantidade zero, informe o custo por medida.");
+  const price=useTotal?Number(total)/quantity:Number(cost),sum=useTotal?Number(total):Math.round(price*quantity*100)/100;
+  const entry=quickStockEntry(unit,quantity,unitsPerPackage);
+  return{...entry,package_cost:unit==="fardo"?price/unitsPerPackage:price,...(quantity>0?{total_paid:sum}:{}),display_cost:price,display_total:sum};
 }
+function updateQuickStockUnit(form){
+  const unit=form.querySelector("[data-quick-unit]").value,bundled=unit==="fardo",measured=["kg","g","L","ml"].includes(unit),[plural,singular]=quickStockMeasures[unit];
+  const quantity=form.querySelector("[data-quick-quantity]"),bundle=form.querySelector("[data-quick-bundle]"),pack=form.querySelector("[data-quick-package]");
+  quantity.step=bundled?"1":".001";
+  form.querySelector("[data-quick-quantity-label]").textContent=bundled?"Quantidade de fardos":`Quantidade em ${plural}`;
+  form.querySelector("[data-quick-bundle-field]").hidden=!bundled;bundle.disabled=!bundled;
+  form.querySelector("[data-quick-package-field]").hidden=bundled||measured;pack.disabled=bundled||measured;
+  form.querySelector("[data-quick-cost-label]").textContent=`Custo por ${singular}`;
+  form.querySelector("[data-quick-minimum-label]").textContent=`Estoque mínimo em ${bundled?"unidades":plural}`;
+  const count=Number(quantity.value),size=Number(bundle.value);
+  form.querySelector("[data-quick-count-hint]").textContent=bundled?`${stockQuantity(count)} fardo(s) × ${stockQuantity(size)} unidades = ${stockQuantity(count*size)} unidades no estoque.`:`Entrada de ${stockQuantity(count)} ${plural} no estoque.`;
+  updateQuickStockCosts(form);
+}
+function updateQuickStockCosts(form,source){
+  if(source)form.dataset.costSource=source;
+  const cost=form.querySelector("[data-quick-cost]"),total=form.querySelector("[data-quick-total]"),quantity=Number(form.querySelector("[data-quick-quantity]").value);
+  cost.setCustomValidity("");total.setCustomValidity("");
+  if(form.dataset.costSource==="total")cost.value=total.value!==""&&quantity>0?String(Number((Number(total.value)/quantity).toFixed(6))):"";
+  else total.value=cost.value!==""&&Number.isFinite(quantity)?(Number(cost.value)*quantity).toFixed(2):"";
+}
+function resetQuickStockEditor(category){
+  const host=modalBody.querySelector("[data-quick-editor-host]");host.innerHTML=quickStockRow(category);quickStockEditing=-1;updateQuickStockUnit(host.querySelector("form"));
+}
+function collectQuickStockDraft(form){
+  const value=key=>form.querySelector(`[data-quick-${key}]`).value;
+  return{name:value("name").trim(),category:value("category"),unit:value("unit"),quantity:Number(value("quantity")),bundle:Number(value("bundle")),pack:Number(value("package")),minimum:Number(value("minimum")||0),cost:value("cost"),total:value("total"),source:form.dataset.costSource};
+}
+function addQuickStockDraft(form){
+  if(!form.reportValidity())return false;
+  const draft=collectQuickStockDraft(form),normalize=name=>name.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLocaleLowerCase("pt-BR");
+  if(!draft.name)throw new Error("Informe o nome do item.");
+  if(pendingQuickStockItems.some((item,index)=>index!==quickStockEditing&&normalize(item.draft.name)===normalize(draft.name))||entries(data.stock_items).some(([,item])=>normalize(item.name)===normalize(draft.name)))throw new Error("Este item já está cadastrado ou adicionado à lista. Para repor o estoque, use Registrar compra.");
+  if(quickStockEditing<0&&pendingQuickStockItems.length>=50)throw new Error("Salve estes 50 itens antes de adicionar outros.");
+  const size=draft.unit==="fardo"?draft.bundle:["kg","g","L","ml"].includes(draft.unit)?1:draft.pack;
+  let costs;
+  try{costs=quickStockCost(draft.unit,draft.quantity,size,draft.cost,draft.total,draft.source)}catch(error){const field=form.querySelector(draft.source==="total"?"[data-quick-total]":"[data-quick-cost]");field.setCustomValidity(error.message);field.reportValidity();return false}
+  const item={draft,payload:{name:draft.name,stock_category:draft.category,stock_minimum:draft.minimum,...costs}};
+  if(quickStockEditing<0)pendingQuickStockItems.push(item);else pendingQuickStockItems[quickStockEditing]=item;
+  resetQuickStockEditor(draft.category);renderQuickStockQueue();modalBody.querySelector("[data-quick-name]").focus();return true;
+}
+function renderQuickStockQueue(){
+  const list=modalBody.querySelector("[data-quick-queue]");
+  list.innerHTML=pendingQuickStockItems.map(({draft,payload},index)=>`<article class="quick-stock-queued-item"><div><b>${esc(draft.name)}</b><strong>${stockQuantity(payload.package_quantity)}× ${esc(quickStockMeasures[payload.unit][0].toLocaleUpperCase("pt-BR"))}</strong>${draft.unit==="fardo"?`<small>${draft.quantity} fardo(s) com ${draft.bundle} unidades</small>`:""}<small>${money(payload.display_total)}</small></div><div class="quick-stock-queue-actions"><button type="button" data-quick-edit="${index}" aria-label="Editar ${esc(draft.name)}">Editar</button><button type="button" data-quick-remove="${index}" aria-label="Remover ${esc(draft.name)}">×</button></div></article>`).join("")||'<p class="quick-stock-queue-empty">Os itens adicionados aparecerão aqui para conferência.</p>';
+  modalBody.querySelector("[data-quick-queue-count]").textContent=`${pendingQuickStockItems.length} ${pendingQuickStockItems.length===1?"item":"itens"}`;
+  modalBody.querySelector("[data-quick-queue-total]").textContent=money(pendingQuickStockItems.reduce((sum,item)=>sum+item.payload.display_total,0));
+  modalBody.querySelector("[data-quick-save]").disabled=!pendingQuickStockItems.length;
+}
+function editQuickStockDraft(index){
+  const current=modalBody.querySelector("[data-form='quick-stock']"),unsaved=collectQuickStockDraft(current);
+  if(quickStockEditing>=0||unsaved.name||unsaved.quantity||unsaved.cost!==""||unsaved.total!==""||unsaved.minimum){if(!addQuickStockDraft(current))return}
+  const {draft}=pendingQuickStockItems[index];resetQuickStockEditor(draft.category);quickStockEditing=index;
+  const form=modalBody.querySelector("[data-form='quick-stock']");
+  for(const [key,value]of Object.entries({name:draft.name,unit:draft.unit,quantity:draft.quantity,bundle:draft.bundle,package:draft.pack,minimum:draft.minimum,cost:draft.cost,total:draft.total}))form.querySelector(`[data-quick-${key}]`).value=value;
+  form.dataset.costSource=draft.source;updateQuickStockUnit(form);form.querySelector("[data-quick-add]").textContent="Atualizar item na lista";form.querySelector("[data-quick-cancel-edit]").hidden=false;form.querySelector("[data-quick-name]").focus();
+}
+async function saveQuickStockQueue(button){
+  if(button.disabled)return;
+  const form=modalBody.querySelector("[data-form='quick-stock']"),draft=collectQuickStockDraft(form);
+  if(quickStockEditing>=0||draft.name||draft.quantity||draft.cost!==""||draft.total!==""||draft.minimum){if(!addQuickStockDraft(form))return}
+  if(!pendingQuickStockItems.length)throw new Error("Adicione pelo menos um item à lista.");
+  button.disabled=true;button.textContent="Salvando...";
+  const layout=modalBody.querySelector(".quick-stock-workspace");layout.inert=true;
+  try{await mutate({action:"stock.quick.create",note:"Cadastro inicial de estoque",items:pendingQuickStockItems.map(({payload:{display_cost,display_total,...payload}})=>payload)},true);pendingQuickStockItems=[];closeModal();draw();toast("Itens cadastrados no estoque.")}
+  finally{if(button.isConnected){layout.inert=false;button.disabled=false;button.textContent="Salvar no estoque"}}
+}
+function quickStockDialog(){
+  pendingQuickStockItems=[];quickStockEditing=-1;
+  openModal(`<div class="quick-stock-heading"><span class="eyebrow">Cadastro de estoque</span><h2>Adicionar itens</h2><p class="muted">Preencha o item, adicione à lista e salve tudo de uma vez.</p></div><div class="quick-stock-workspace"><div data-quick-editor-host>${quickStockRow()}</div><aside class="quick-stock-sidebar"><header><h3>Itens adicionados</h3><span data-quick-queue-count></span></header><div data-quick-queue></div><footer><div><span>Custo total</span><b data-quick-queue-total></b></div><button type="button" class="primary" data-quick-save>Salvar no estoque</button><small>O estoque será atualizado ao salvar esta lista.</small></footer></aside></div>`);
+  modal.classList.add("quick-stock-dialog");updateQuickStockUnit(modalBody.querySelector("[data-form='quick-stock']"));renderQuickStockQueue();modalBody.querySelector("[data-quick-name]").focus();
+}
+
 stockItemEditDialog=function(id){stockItemEditDialogWithPortion(id);const form=modalBody.querySelector("[data-form='stock-item-details']"),item=data.stock_items[id],stockCategory=item?.stock_category||"Bebida";form?.querySelector("[name='portion_size']")?.closest(".form-row")?.remove();form?.elements.name?.closest(".field")?.insertAdjacentHTML("afterend",`<div class="field"><label>Categoria no estoque</label><select name="stock_category"><option ${stockCategory==="Comida"?'selected':''}>Comida</option><option ${stockCategory==="Bebida"?'selected':''}>Bebida</option><option value="Descartável" ${stockCategory==="Descartável"?'selected':''}>Embalagem/Descartável</option></select></div>`)}
 function stockItemDialog(id=""){const i=data.stock_items[id]||{},quantity=id?"":"1",units=[["un","Unidade"],["lata","Lata"],["latão","Latão"],["garrafa","Garrafa"],["galão","Galão"],["pacote","Pacote"],["caixa","Caixa"],["fardo","Fardo"],["kg","Quilograma (kg)"],["g","Grama (g)"],["L","Litro (L)"],["ml","Mililitro (ml)"]];openModal(`<h2>${id?"Editar produto":"Cadastrar produto"}</h2><p class="muted">A quantidade representa quantas embalagens entram no estoque. O volume de cada embalagem é informado separadamente.</p><form data-form="stock-item"><input type="hidden" name="id" value="${id}"><div class="form-row"><div class="field"><label>Código do produto</label><input name="sku" value="${esc(i.sku||"")}" placeholder="Ex.: 008744" autofocus></div><div class="field"><label>Produto</label><input name="name" value="${esc(i.name||"")}" placeholder="Ex.: Skol Latão" required></div></div><div class="form-row"><div class="field"><label>${id?"Quantidade de entrada adicional":"Quantidade de entrada"}</label><input name="entry_quantity" type="number" min="0" step=".001" value="${quantity}" ${id?"":"required"}></div><div class="field"><label>Embalagem contada no estoque</label><select name="unit">${units.map(([value,label])=>`<option value="${value}" ${i.unit===value?'selected':''}>${label}</option>`).join("")}</select><small class="muted">Ex.: 25 latões = quantidade 25 e embalagem Latão.</small></div></div><div class="form-row"><div class="field"><label>Conteúdo de cada embalagem (opcional)</label><input name="package_size" type="number" min="0" step=".001" value="${i.package_size??''}" placeholder="Ex.: 473 ou 1"></div><div class="field"><label>Medida do conteúdo</label><select name="package_measure">${["ml","L","g","kg"].map(v=>`<option ${i.package_measure===v?'selected':''}>${v}</option>`).join("")}</select><small class="muted">Ex.: 473 ml por latão ou 1 L por garrafa.</small></div></div><div class="form-row"><div class="field"><label>Valor por embalagem</label><input name="cost_price" type="number" min="0" step=".01" value="${i.cost_price??0}" required></div><div class="field"><label>Valor total</label><div class="summary-value" data-manual-stock-total>${money(Number(quantity||0)*Number(i.cost_price||0))}</div></div></div><div class="form-row"><div class="field"><label>Fornecedor</label><input name="supplier" value="${esc(i.supplier||"")}" placeholder="Razão social ou nome"></div><div class="field"><label>Número do pedido/documento</label><input name="document_number" placeholder="Ex.: 032026072115"></div></div><div class="form-row"><div class="field"><label>Estoque mínimo (em embalagens)</label><input name="stock_minimum" type="number" min="0" step=".001" value="${i.stock_minimum??0}" required></div><div class="field"><label>Código de barras</label><input name="barcode" value="${esc(i.barcode||"")}"></div></div><button class="primary checkout-button">${id?"Salvar produto":"Cadastrar produto e dar entrada"}</button></form>`)}
 const stockItemDialogWithoutPortion=stockItemDialog;
@@ -894,8 +943,10 @@ document.addEventListener("click",async event=>{
     else if(el.hasAttribute("data-new-stock-item"))stockItemDialog();
     else if(el.hasAttribute("data-new-purchase"))stockPurchaseDialog();
     else if(el.hasAttribute("data-quick-stock"))quickStockDialog();
-    else if(el.hasAttribute("data-add-quick-stock")){const section=el.closest("[data-quick-section]"),list=section.querySelector("[data-quick-stock-list]");list.insertAdjacentHTML("beforeend",quickStockRow(section.dataset.quickSection));list.querySelector(".quick-stock-row:last-child [data-quick-name]")?.focus()}
-    else if(el.hasAttribute("data-remove-quick-stock"))el.closest(".quick-stock-row").remove();
+    else if(el.hasAttribute("data-quick-save"))await saveQuickStockQueue(el);
+    else if(el.hasAttribute("data-quick-edit"))editQuickStockDraft(Number(el.dataset.quickEdit));
+    else if(el.hasAttribute("data-quick-remove")){const index=Number(el.dataset.quickRemove);pendingQuickStockItems.splice(index,1);if(quickStockEditing===index)resetQuickStockEditor("Bebida");else if(quickStockEditing>index)quickStockEditing--;renderQuickStockQueue()}
+    else if(el.hasAttribute("data-quick-cancel-edit"))resetQuickStockEditor(modalBody.querySelector("[data-quick-category]").value);
     else if(el.dataset.stockPurchase)stockPurchaseDialog(el.dataset.stockPurchase);
     else if(el.hasAttribute("data-add-purchase-line")){preservePurchaseMeta();purchaseLineDialog()}
     else if(el.dataset.editPurchaseLine!==undefined){preservePurchaseMeta();purchaseLineDialog(el.dataset.editPurchaseLine)}
@@ -962,19 +1013,7 @@ document.addEventListener("submit",async event=>{
     if(form.dataset.form==="staff-pay")await mutate({action:"staff.shift.pay",...fd},true);
     if(form.dataset.form==="stock-config")await mutate({action:"stock.configure",...fd,stock_controlled:Boolean(fd.stock_controlled)},true);
     if(form.dataset.form==="stock-move")await mutate({action:"stock.move",...fd},true);
-    if(form.dataset.form==="quick-stock"){
-      const items=[...form.querySelectorAll(".quick-stock-row")].map(row=>{
-        const name=row.querySelector("[data-quick-name]").value.trim(),quantity=Number(row.querySelector("[data-quick-quantity]").value||0),cost=row.querySelector("[data-quick-cost]").value,minimum=Number(row.querySelector("[data-quick-minimum]").value||0);
-        if(!name){if(quantity||cost!==""||minimum)throw new Error("Informe o nome do produto na linha preenchida.");return null}
-        if(!Number.isFinite(quantity)||quantity<0)throw new Error(`Informe uma quantidade válida para ${name}.`);
-        if(cost!==""&&(!Number.isFinite(Number(cost))||Number(cost)<0))throw new Error(`Informe um custo válido para ${name}.`);
-        return{name,...quickStockEntry(row.querySelector("[data-quick-unit]").value,quantity,Number(row.querySelector("[data-quick-package]").value)),stock_category:row.querySelector("[data-quick-category]").value,stock_minimum:minimum,package_cost:cost===""?"":Number(cost)};
-      }).filter(Boolean);
-      if(!items.length)throw new Error("Preencha pelo menos um produto.");
-      const submit=form.querySelector("button[type='submit']");if(submit.disabled)return;submit.disabled=true;submit.textContent="Salvando...";
-      try{const result=await mutate({action:"stock.quick.create",responsible:fd.responsible,note:"Cadastro inicial de estoque",items},true);closeModal();draw();toast(`${result.items_count} produto(s) cadastrado(s) no estoque.`);return}
-      finally{if(form.isConnected){submit.disabled=false;submit.textContent="Salvar itens"}}
-    }
+    if(form.dataset.form==="quick-stock"){addQuickStockDraft(form);return}
     if(form.dataset.form==="stock-purchase-line"){const packageQuantity=Number(fd.package_quantity),unitsPerPackage=Number(fd.units_per_package),totalPaid=fd.package_cost===""?"":Number(fd.package_cost),contentPerUnit=fd.content_per_unit===""?"":Number(fd.content_per_unit),index=form.dataset.index,unit=fd.stock_type==="weight"?"kg":fd.stock_type==="volume"?"L":"un",name=(fd.name||"").trim(),existingUnit=data.stock_items[fd.id]?.unit||unit,bulkPackage=fd.purchase_unit==="package"&&["kg","g","L","ml"].includes(existingUnit);if(!fd.id&&!name)throw new Error("Informe o nome do produto.");if(!Number.isFinite(packageQuantity)||packageQuantity<=0)throw new Error("Informe a quantidade comprada.");if(!Number.isInteger(unitsPerPackage)||unitsPerPackage<=0)throw new Error("Informe quantas unidades existem em cada embalagem.");if(bulkPackage&&(!Number.isFinite(contentPerUnit)||contentPerUnit<=0))throw new Error("Informe o conteúdo de cada unidade da embalagem.");if(totalPaid!==""&&(!Number.isFinite(totalPaid)||totalPaid<0))throw new Error("Informe um valor total válido.");if(fd.id&&pendingPurchaseItems.some((item,itemIndex)=>item.id===fd.id&&String(itemIndex)!==index))throw new Error("Este produto já foi adicionado à compra. Edite a linha existente.");const line={id:fd.id,name,stock_category:fd.stock_category,unit,purchase_unit:fd.purchase_unit,units_per_package:unitsPerPackage,content_per_unit:contentPerUnit,content_unit:fd.content_unit,package_quantity:packageQuantity,total_paid:totalPaid};if(index==="")pendingPurchaseItems.push(line);else pendingPurchaseItems[Number(index)]=line;renderBatchPurchaseDialog();return}
     if(form.dataset.form==="stock-purchase-batch"){if(!pendingPurchaseItems.length)throw new Error("Adicione pelo menos um produto à compra.");const result=await mutate({action:"stock.purchase.batch",responsible:fd.responsible,note:fd.note,items:pendingPurchaseItems},true);pendingPurchaseItems=[];pendingPurchaseMeta={responsible:"",note:""};closeModal();draw();toast(`${result.items_count} produto(s) adicionados ao estoque.`);return}
     if(form.dataset.form==="stock-purchase"){const packageQuantity=Number(fd.quantity),unitsPerPackage=Number(fd.units_per_package),hasPackageCost=fd.unit_cost!=="",packageCost=Number(fd.unit_cost||0);if(!Number.isFinite(packageQuantity)||packageQuantity<=0)throw new Error("Informe a quantidade de embalagens compradas.");if(!Number.isInteger(unitsPerPackage)||unitsPerPackage<=0)throw new Error("Informe quantas unidades existem em cada embalagem.");const totalUnits=packageQuantity*unitsPerPackage,unitCost=hasPackageCost?packageCost/unitsPerPackage:"";let itemId=fd.id;if(!itemId){const saved=await mutate({action:"stock.item.save",name:fd.name,unit:fd.unit,package_size:fd.package_size,package_measure:fd.package_measure,portion_size:fd.portion_size,portion_measure:fd.portion_measure,stock_minimum:fd.stock_minimum,cost_price:Number(unitCost||0),purchase_unit:fd.purchase_unit,units_per_package:unitsPerPackage,supplier:"",sku:"",barcode:""},true);itemId=saved.id}const packageLabel=fd.purchase_unit==="un"?"unidade":fd.purchase_unit;await mutate({action:"stock.item.move",id:itemId,type:"in",quantity:totalUnits,unit_cost:unitCost,purchase_unit:fd.purchase_unit,units_per_package:unitsPerPackage,responsible:fd.responsible,reason:fd.reason||`${packageQuantity} ${packageLabel}${packageQuantity===1?"":"s"} × ${unitsPerPackage} unidades`},true)}
@@ -1084,3 +1123,10 @@ document.addEventListener("toggle",event=>{
 document.addEventListener("fullscreenchange",()=>{if(kitchenViewOpen())draw()});
 async function start(){try{if(inviteToken)await claimInvite();if(token||deviceToken||originToken)await load();else draw()}catch(error){localStorage.removeItem("staffAccessToken");originToken="";module=null;page=null;draw();toast(error.message,true)}}
 start();
+
+document.addEventListener("input",event=>{
+  if(!event.target.closest("[data-form='quick-stock']"))return;
+  if(event.target.matches("[data-quick-cost]"))updateQuickStockCosts(event.target.form,"unit");
+  else if(event.target.matches("[data-quick-total]"))updateQuickStockCosts(event.target.form,"total");
+  else if(event.target.matches("[data-quick-quantity],[data-quick-bundle]"))updateQuickStockUnit(event.target.form);
+});

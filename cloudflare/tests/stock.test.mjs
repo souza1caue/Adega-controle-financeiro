@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
@@ -53,8 +53,8 @@ test('legacy controlled products also deduct and restore negative stock',async()
 test('loss still rejects insufficient stock and writes no movement',async()=>{
   const f=fixture();const response=await f.call({...entry(2),type:'loss'});assert.equal(response.status,409);assert.equal(f.balance('beer'),0);assert.equal(f.records('stock_movements').length,0);
 });
-test('quick registration supports zero, optional cost and correct unit cost',async()=>{
-  const f=fixture();const response=await f.call({action:'stock.quick.create',responsible:'Teste',items:[{name:'Água',package_quantity:24,package_cost:2.5},{name:'Gelo',package_quantity:0,package_cost:''}]});
+test('quick registration supports zero balance, explicit zero cost and correct unit cost',async()=>{
+  const f=fixture();const response=await f.call({action:'stock.quick.create',responsible:'Teste',items:[{name:'Água',package_quantity:24,package_cost:2.5},{name:'Gelo',package_quantity:0,package_cost:0}]});
   assert.equal(response.status,200,JSON.stringify(response));assert.equal(response.total_cost,60);
   const water=f.records('stock_items').find(i=>i.name==='Água'),ice=f.records('stock_items').find(i=>i.name==='Gelo');
   assert.equal(f.balance(water.id),24);assert.equal(water.cost_price,2.5);assert.equal(water.unit,'un');assert.equal(f.balance(ice.id),0);assert.equal(ice.cost_price,0);
@@ -62,7 +62,7 @@ test('quick registration supports zero, optional cost and correct unit cost',asy
 });
 test('invalid and duplicate quick registrations leave no partial items',async()=>{
   for(const items of [[{name:'Novo',package_quantity:2},{name:'CERVEJA',package_quantity:1}],[{name:'Água',package_quantity:1},{name:'agua',package_quantity:1}],[{name:'Novo',package_quantity:-1}]]){
-    const f=fixture();assert.equal((await f.call({action:'stock.quick.create',responsible:'Teste',items})).status,400);assert.equal(f.records('stock_items').length,1);assert.equal(f.records('stock_movements').length,0);
+    const f=fixture();assert.equal((await f.call({action:'stock.quick.create',responsible:'Teste',items:items.map(item=>({...item,package_cost:0}))})).status,400);assert.equal(f.records('stock_items').length,1);assert.equal(f.records('stock_movements').length,0);
   }
 });
 test('purchases and invoice imports on negative balances keep valid costs',async()=>{
@@ -105,7 +105,7 @@ test('invoice entries and counted adjustments regularize negative stock',async()
 
 test('saved packaging does not multiply initial count and replenishment offsets sales',async()=>{
   const f=fixture();
-  assert.equal((await f.call({action:'stock.quick.create',responsible:'Teste',items:[{name:'Lata modelo',unit:'un',package_quantity:2,default_units_per_package:12}]})).status,200);
+  assert.equal((await f.call({action:'stock.quick.create',responsible:'Teste',items:[{name:'Lata modelo',unit:'un',package_quantity:2,default_units_per_package:12,package_cost:0}]})).status,200);
   const item=f.records('stock_items').find(item=>item.name==='Lata modelo');
   assert.equal(f.balance(item.id),2);assert.equal(item.units_per_package,12);assert.equal(item.purchase_unit,'package');
   f.put('recipes','beer',{components:[{stock_item_id:item.id,quantity:1}]});
@@ -118,6 +118,6 @@ test('saved packaging does not multiply initial count and replenishment offsets 
 });
 test('invalid saved packaging leaves initial registration untouched',async()=>{
   const f=fixture();
-  assert.equal((await f.call({action:'stock.quick.create',responsible:'Teste',items:[{name:'Invalid model',package_quantity:2,default_units_per_package:0}]})).status,400);
+  assert.equal((await f.call({action:'stock.quick.create',responsible:'Teste',items:[{name:'Invalid model',package_quantity:2,default_units_per_package:0,package_cost:0}]})).status,400);
   assert.equal(f.records('stock_items').length,1);
 });

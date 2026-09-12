@@ -511,6 +511,8 @@ async function mutate(request, env) {
       const movementQuantity = packageQuantity * unitsPerPackage * contentPerUnit;
       const hasTotalPaid = line.total_paid !== "" && line.total_paid != null;
       const hasUnitCost = !hasTotalPaid && line.package_cost !== "" && line.package_cost != null;
+      if (quickCreate && !hasTotalPaid && !hasUnitCost) throw new Error(`Informe o custo por unidade ou o custo total de ${item.name}.`);
+      if (quickCreate && hasTotalPaid && movementQuantity === 0) throw new Error(`Para cadastrar ${item.name} sem saldo, informe o custo por unidade.`);
       const totalPaid = hasTotalPaid ? amount(line.total_paid, `o valor total pago por ${item.name}`) : null;
       const entryCost = hasTotalPaid ? (movementQuantity > 0 ? Math.round(totalPaid / movementQuantity * 10000) / 10000 : null) : hasUnitCost ? amount(line.package_cost, `o valor por ${stockUnit} de ${item.name}`) : null;
       const purchaseTotal = totalPaid ?? (entryCost == null ? 0 : Math.round(entryCost * movementQuantity * 100) / 100);
