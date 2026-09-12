@@ -629,8 +629,9 @@ document.addEventListener("change",event=>{
     const template=stockTemplates[event.target.value];if(!template)return;
     const row=event.target.closest(".quick-stock-row");
     for(const [key,value] of Object.entries({name:template.name,unit:template.unit,category:template.category,package:template.units}))row.querySelector(`[data-quick-${key}]`).value=value;
-    row.querySelector("details").open=true;
+    updateQuickStockUnit(row);
   }
+  if(event.target.matches("[data-quick-unit]"))updateQuickStockUnit(event.target.closest(".quick-stock-row"));
   if(event.target.matches("[data-purchase-template]")){
     const template=stockTemplates[event.target.value];if(!template)return;
     const form=event.target.form;form.elements.name.value=template.name;form.elements.stock_type.value=template.unit==="kg"?"weight":"unit";
@@ -642,18 +643,46 @@ document.addEventListener("change",event=>{
     const config=event.target.form.querySelector("[data-package-settings]");if(config)config.open=!event.target.value;
   }
 });
-function quickStockRow(){return`<div class="quick-stock-row">
-  <div class="field quick-stock-template"><label>Começar com um modelo</label><select data-stock-template>${stockTemplateOptions()}</select><small>Edite o nome para incluir a marca. Confira a embalagem sugerida.</small></div>
-  <div class="field"><label>Produto</label><input data-quick-name placeholder="Ex.: Skol Latão" aria-label="Produto"></div>
-  <div class="field"><label>Quantidade atual</label><input data-quick-quantity type="number" min="0" step=".001" value="0" inputmode="decimal" aria-label="Quantidade atual"></div>
-  <div class="field"><label>Custo por unidade (opcional)</label><input data-quick-cost type="number" min="0" step=".01" placeholder="R$" inputmode="decimal" aria-label="Custo por unidade"></div>
-  <button type="button" class="danger quick-stock-remove" data-remove-quick-stock aria-label="Remover linha">×</button>
-  <details class="quick-stock-options"><summary>Configuração · embalagem, categoria e unidade</summary><div class="quick-stock-options-grid">
-  <div class="field"><label>Categoria</label><select data-quick-category aria-label="Categoria"><option>Bebida</option><option>Comida</option><option value="Descartável">Embalagem/Descartável</option></select></div>
-  <div class="field"><label>Unidade contada</label><select data-quick-unit aria-label="Unidade contada"><option value="un">Unidade</option><option value="lata">Lata</option><option value="latão">Latão</option><option value="garrafa">Garrafa</option><option value="pacote">Pacote</option><option value="kg">kg</option><option value="g">g</option><option value="L">Litro</option><option value="ml">ml</option></select></div>
-  <div class="field"><label>Unidades por embalagem na próxima compra</label><input data-quick-package type="number" min="1" step="1" value="1" required></div><div class="field"><label>Estoque mínimo</label><input data-quick-minimum type="number" min="0" step=".001" value="0" inputmode="decimal" aria-label="Estoque mínimo"></div></div></details>
-  </div>`}
-function quickStockDialog(){openModal(`<form data-form="quick-stock"><div class="batch-purchase-head"><div><span class="eyebrow">Cadastro simples</span><h2>Cadastrar itens no estoque</h2><p class="muted">Informe o nome e a quantidade que existe hoje. Pode começar com zero e preencher o custo depois.</p></div></div><p class="notice">Escolha um modelo ou preencha livremente. A quantidade atual é o total de unidades; a embalagem fica salva para as próximas compras.</p><div class="quick-stock-list" data-quick-stock-list>${quickStockRow()}</div><button type="button" data-add-quick-stock>+ Adicionar outro produto</button><p class="muted">O cadastro cria o estoque. Para baixar nas vendas, vincule o item aos insumos do produto no Cardápio. Itens já cadastrados recebem saldo em Registrar compra.</p><div class="quick-stock-footer"><button type="submit" class="primary checkout-button">Salvar itens</button></div></form>`);modalBody.querySelector("[data-quick-name]")?.focus()}
+const quickStockCategories = {
+  Bebida: {title:"Bebidas", hint:"Cervejas, refrigerantes, água, destilados e gelo.", placeholder:"Ex.: Skol latão 473 ml", units:[["un","Unidades"],["lata","Latas"],["latão","Latões"],["garrafa","Garrafas"],["pacote","Pacotes de gelo"],["L","Litros"],["ml","Mililitros"]]},
+  Comida: {title:"Comidas e ingredientes", hint:"Produtos prontos por unidade; ingredientes por peso.", placeholder:"Ex.: Espetinho de carne", units:[["un","Unidades"],["kg","Quilos (kg)"],["g","Gramas (g)"],["pacote","Pacotes"],["L","Litros"],["ml","Mililitros"]]},
+  "Descartável": {title:"Embalagens e descartáveis", hint:"Copos, sacolas, guardanapos e embalagens.", placeholder:"Ex.: Copo 300 ml", units:[["un","Unidades"],["pacote","Pacotes"]]}
+};
+function quickStockRow(category="Bebida"){
+  const config=quickStockCategories[category]||quickStockCategories.Bebida;
+  const templates=stockTemplates.map((item,index)=>({...item,index})).filter(item=>item.category===category);
+  return `<div class="quick-stock-row"><input type="hidden" data-quick-category value="${esc(category)}">
+    <div class="field quick-stock-name"><label>Nome do item</label><input data-quick-name placeholder="${esc(config.placeholder)}" aria-label="Nome do item"></div>
+    <div class="field"><label>Como você conta?</label><select data-quick-unit aria-label="Como você conta?">${config.units.map(([value,label])=>`<option value="${value}">${label}</option>`).join("")}</select></div>
+    <div class="field"><label data-quick-quantity-label>Quantidade em unidades</label><input data-quick-quantity type="number" min="0" step=".001" value="0" inputmode="decimal" aria-label="Quantidade atual"><small data-quick-count-hint>Informe o total avulso, sem contar caixas ou fardos.</small></div>
+    <button type="button" class="danger quick-stock-remove" data-remove-quick-stock aria-label="Remover item">×</button>
+    <details class="quick-stock-options"><summary>Custo e outras opções</summary><div class="quick-stock-options-grid">
+      <div class="field"><label>Modelo pronto (opcional)</label><select data-stock-template aria-label="Modelo pronto"><option value="">Preencher livremente</option>${templates.map(item=>`<option value="${item.index}">${esc(item.name)}</option>`).join("")}</select></div>
+      <div class="field"><label data-quick-cost-label>Custo por unidade (opcional)</label><input data-quick-cost type="number" min="0" step=".01" placeholder="Pode preencher depois" inputmode="decimal" aria-label="Custo por unidade"></div>
+      <div class="field"><label>Estoque mínimo (opcional)</label><input data-quick-minimum type="number" min="0" step=".001" value="0" inputmode="decimal" aria-label="Estoque mínimo"></div>
+      <div class="field" data-quick-package-field><label>Unidades por embalagem na próxima compra</label><input data-quick-package type="number" min="1" step="1" value="1" required><small>Não multiplica a quantidade cadastrada agora.</small></div>
+    </div></details>
+  </div>`;
+}
+function updateQuickStockUnit(row){
+  const unit=row.querySelector("[data-quick-unit]").value;
+  const labels={un:["unidades","unidade"],lata:["latas","lata"],"latão":["latões","latão"],garrafa:["garrafas","garrafa"],pacote:["pacotes","pacote"],kg:["kg","kg"],g:["g","g"],L:["litros","litro"],ml:["ml","ml"]};
+  const [plural,singular]=labels[unit]||labels.un,measured=["kg","g","L","ml"].includes(unit);
+  row.querySelector("[data-quick-quantity-label]").textContent=`Quantidade em ${plural}`;
+  row.querySelector("[data-quick-cost-label]").textContent=`Custo por ${singular} (opcional)`;
+  row.querySelector("[data-quick-cost]").setAttribute("aria-label",`Custo por ${singular}`);
+  row.querySelector("[data-quick-count-hint]").textContent=measured?`Informe o total em ${plural}. Ex.: 2,5.`:unit==="pacote"?"Conte pacotes inteiros; use essa mesma medida no cardápio.":`Conte ${plural} avulsos, sem contar caixas ou fardos.`;
+  row.querySelector("[data-quick-package-field]").hidden=measured;
+  if(measured)row.querySelector("[data-quick-package]").value="1";
+}
+function quickStockDialog(){
+  openModal(`<form data-form="quick-stock"><span class="eyebrow">Cadastro por categoria</span><h2>Cadastrar itens no estoque</h2><p class="muted">Escolha a seção, informe o nome e quanto tem hoje. O custo pode ficar para depois.</p>
+    <div class="quick-stock-sections">${Object.entries(quickStockCategories).map(([category,config])=>`<section class="quick-stock-section" data-quick-section="${esc(category)}"><header><div><h3>${config.title}</h3><p class="muted">${config.hint}</p></div><button type="button" data-add-quick-stock="${esc(category)}">+ Adicionar</button></header><div class="quick-stock-list" data-quick-stock-list>${category==="Bebida"?quickStockRow(category):""}</div></section>`).join("")}</div>
+    <p class="muted">Pode começar com quantidade zero. Para um item que já existe, use Registrar compra. Depois, vincule os novos itens no Cardápio para dar baixa nas vendas.</p><div class="quick-stock-footer"><button type="submit" class="primary checkout-button">Salvar itens</button></div></form>`);
+  const form=modalBody.querySelector("[data-form='quick-stock']");
+  form.addEventListener("invalid",event=>{const details=event.target.closest("details");if(details)details.open=true},true);
+  form.querySelector("[data-quick-name]")?.focus();
+}
 stockItemEditDialog=function(id){stockItemEditDialogWithPortion(id);const form=modalBody.querySelector("[data-form='stock-item-details']"),item=data.stock_items[id],stockCategory=item?.stock_category||"Bebida";form?.querySelector("[name='portion_size']")?.closest(".form-row")?.remove();form?.elements.name?.closest(".field")?.insertAdjacentHTML("afterend",`<div class="field"><label>Categoria no estoque</label><select name="stock_category"><option ${stockCategory==="Comida"?'selected':''}>Comida</option><option ${stockCategory==="Bebida"?'selected':''}>Bebida</option><option value="Descartável" ${stockCategory==="Descartável"?'selected':''}>Embalagem/Descartável</option></select></div>`)}
 function stockItemDialog(id=""){const i=data.stock_items[id]||{},quantity=id?"":"1",units=[["un","Unidade"],["lata","Lata"],["latão","Latão"],["garrafa","Garrafa"],["galão","Galão"],["pacote","Pacote"],["caixa","Caixa"],["fardo","Fardo"],["kg","Quilograma (kg)"],["g","Grama (g)"],["L","Litro (L)"],["ml","Mililitro (ml)"]];openModal(`<h2>${id?"Editar produto":"Cadastrar produto"}</h2><p class="muted">A quantidade representa quantas embalagens entram no estoque. O volume de cada embalagem é informado separadamente.</p><form data-form="stock-item"><input type="hidden" name="id" value="${id}"><div class="form-row"><div class="field"><label>Código do produto</label><input name="sku" value="${esc(i.sku||"")}" placeholder="Ex.: 008744" autofocus></div><div class="field"><label>Produto</label><input name="name" value="${esc(i.name||"")}" placeholder="Ex.: Skol Latão" required></div></div><div class="form-row"><div class="field"><label>${id?"Quantidade de entrada adicional":"Quantidade de entrada"}</label><input name="entry_quantity" type="number" min="0" step=".001" value="${quantity}" ${id?"":"required"}></div><div class="field"><label>Embalagem contada no estoque</label><select name="unit">${units.map(([value,label])=>`<option value="${value}" ${i.unit===value?'selected':''}>${label}</option>`).join("")}</select><small class="muted">Ex.: 25 latões = quantidade 25 e embalagem Latão.</small></div></div><div class="form-row"><div class="field"><label>Conteúdo de cada embalagem (opcional)</label><input name="package_size" type="number" min="0" step=".001" value="${i.package_size??''}" placeholder="Ex.: 473 ou 1"></div><div class="field"><label>Medida do conteúdo</label><select name="package_measure">${["ml","L","g","kg"].map(v=>`<option ${i.package_measure===v?'selected':''}>${v}</option>`).join("")}</select><small class="muted">Ex.: 473 ml por latão ou 1 L por garrafa.</small></div></div><div class="form-row"><div class="field"><label>Valor por embalagem</label><input name="cost_price" type="number" min="0" step=".01" value="${i.cost_price??0}" required></div><div class="field"><label>Valor total</label><div class="summary-value" data-manual-stock-total>${money(Number(quantity||0)*Number(i.cost_price||0))}</div></div></div><div class="form-row"><div class="field"><label>Fornecedor</label><input name="supplier" value="${esc(i.supplier||"")}" placeholder="Razão social ou nome"></div><div class="field"><label>Número do pedido/documento</label><input name="document_number" placeholder="Ex.: 032026072115"></div></div><div class="form-row"><div class="field"><label>Estoque mínimo (em embalagens)</label><input name="stock_minimum" type="number" min="0" step=".001" value="${i.stock_minimum??0}" required></div><div class="field"><label>Código de barras</label><input name="barcode" value="${esc(i.barcode||"")}"></div></div><button class="primary checkout-button">${id?"Salvar produto":"Cadastrar produto e dar entrada"}</button></form>`)}
 const stockItemDialogWithoutPortion=stockItemDialog;
@@ -843,8 +872,8 @@ document.addEventListener("click",async event=>{
     else if(el.hasAttribute("data-new-stock-item"))stockItemDialog();
     else if(el.hasAttribute("data-new-purchase"))stockPurchaseDialog();
     else if(el.hasAttribute("data-quick-stock"))quickStockDialog();
-    else if(el.hasAttribute("data-add-quick-stock")){const form=el.closest("form");form.querySelector("[data-quick-stock-list]").insertAdjacentHTML("beforeend",quickStockRow());form.querySelector(".quick-stock-row:last-child [data-quick-name]")?.focus()}
-    else if(el.hasAttribute("data-remove-quick-stock")){const list=el.closest("[data-quick-stock-list]"),row=el.closest(".quick-stock-row");if(list.children.length>1)row.remove();else row.outerHTML=quickStockRow()}
+    else if(el.hasAttribute("data-add-quick-stock")){const section=el.closest("[data-quick-section]"),list=section.querySelector("[data-quick-stock-list]");list.insertAdjacentHTML("beforeend",quickStockRow(section.dataset.quickSection));list.querySelector(".quick-stock-row:last-child [data-quick-name]")?.focus()}
+    else if(el.hasAttribute("data-remove-quick-stock"))el.closest(".quick-stock-row").remove();
     else if(el.dataset.stockPurchase)stockPurchaseDialog(el.dataset.stockPurchase);
     else if(el.hasAttribute("data-add-purchase-line")){preservePurchaseMeta();purchaseLineDialog()}
     else if(el.dataset.editPurchaseLine!==undefined){preservePurchaseMeta();purchaseLineDialog(el.dataset.editPurchaseLine)}
