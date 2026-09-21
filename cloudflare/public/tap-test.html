@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer"><title>Piloto InfiniteTap · Controle Adega</title>
+  <link rel="stylesheet" href="/tap-test.css">
+</head>
+<body>
+  <header><a href="/">← Voltar ao sistema</a><span>PILOTO · INFINITETAP</span></header>
+  <main>
+    <h1>Cartão pelo celular</h1>
+    <p>Selecione os produtos e abra a cobrança no aplicativo InfinitePay. Após receber, confira o comprovante para registrar a venda.</p>
+    <p class="notice">Este teste pode cobrar dinheiro real. Use um celular compatível com NFC, com a conta InfinitePay ativa. Se o retorno não abrir esta página, volte pelo navegador: seu pedido ficará pendente.</p>
+    <div id="message" role="status" aria-live="polite"></div>
+    <section id="login" hidden><h2>Entre como administrador</h2><form id="login-form"><label>Senha administrativa<input name="password" type="password" autocomplete="current-password" required></label><button>Entrar no piloto</button></form></section>
+    <div id="workspace" hidden>
+      <section><h2>Nova cobrança</h2><form id="order-form">
+        <label>InfiniteTag da conta recebedora<input name="handle" placeholder="Sua identificação na InfinitePay, sem @" required maxlength="80" pattern="[a-zA-Z0-9_-]{2,80}" autocomplete="off"></label>
+        <label>Buscar produto<input id="search" type="search" placeholder="Nome do produto"></label>
+        <div id="products"></div>
+        <p class="total">Total selecionado <strong id="total">R$ 0,00</strong></p>
+        <label>Nome do cliente (obrigatório para comida)<input name="customer_name" maxlength="160"></label>
+        <label>Cartão<select name="card_method"><option value="debit">Débito</option><option value="credit">Crédito à vista</option></select></label>
+        <button id="prepare">Preparar cobrança</button>
+      </form></section>
+      <section><div class="section-title"><h2>Cobranças do piloto</h2><button id="refresh" class="secondary">Atualizar</button></div><p>Preparar ou abrir o aplicativo não registra uma venda. O caixa e o estoque só mudam quando você confirma o recebimento. Descartar aqui não estorna pagamentos na InfinitePay.</p><div id="payments"></div></section>
+    </div>
+  </main>
+  <script type="module" src="/tap-test.js"></script>
+</body>
+</html>

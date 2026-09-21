@@ -297,8 +297,8 @@ async function cartItems(db, inputItems) {
 }
 
 async function mutate(request, env) {
-  const input = await request.json();
-  const action = input.action;
+  let input = await request.json();
+  let action = input.action;
   const adminActions = new Set(["menu.save", "menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "stock.purchase.batch", "stock.quick.create", "stock.invoice.import", "stock.event.cancel", "hosted.event.save", "hosted.event.close", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "event.save", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
   const admin = await isAdmin(request, env);
   const db = env.DB;
@@ -321,6 +321,55 @@ async function mutate(request, env) {
     input[field] = typeof input[field] === "string" && input[field].trim() ? input[field].trim() : automaticResponsible;
   }
   const id = input.id || uid();
+
+  let tapPayment = null;
+  if (action.startsWith("tap.")) {
+    if (!admin) return reply({ error: "O piloto Tap exige acesso administrativo." }, 403);
+    if (action === "tap.list") {
+      const rows = await db.prepare("SELECT id,data FROM records WHERE kind='tap_payments' ORDER BY created_at DESC").all();
+      return reply({ payments: rows.results.map(row => ({ id: row.id, ...JSON.parse(row.data) })) });
+    }
+    if (action === "tap.prepare") {
+      const existing = await readRecord(db, "tap_payments", id);
+      if (existing) return reply({ ok: true, id, payment: existing });
+      const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+      if (!open) throw new Error("Abra o caixa antes de testar a cobrança.");
+      const items = await cartItems(db, input.items);
+      const total = Math.round(items.reduce((sum, item) => sum + item.quantity * item.price, 0) * 100);
+      if (!Number.isSafeInteger(total) || total < 100 || items.some(item => !Number.isFinite(item.price) || item.price < 0)) throw new Error("A cobrança deve ser de pelo menos R$ 1,00.");
+      if (!["credit", "debit"].includes(input.card_method)) throw new Error("Selecione débito ou crédito.");
+      const customerName = String(input.customer_name || "").trim().slice(0, 160);
+      if (items.some(item => item.category === "Comidas")) required(customerName, "o nome do cliente para enviar à cozinha");
+      const handle = String(input.handle || "").trim().replace(/^@/, "");
+      if (!/^[a-zA-Z0-9_-]{2,80}$/.test(handle)) throw new Error("Informe a InfiniteTag da conta que receberá o pagamento.");
+      const payment = { status: "pending", total_cents: total, card_method: input.card_method, handle, items, customer_name: customerName, cash_session_id: open.id, created_at: now() };
+      await db.prepare("INSERT INTO records(kind,id,data) VALUES('tap_payments',?,?)").bind(id, JSON.stringify(payment)).run();
+      return reply({ ok: true, id, payment });
+    }
+    const payment = await readRecord(db, "tap_payments", id);
+    if (!payment) throw new Error("Cobrança não encontrada.");
+    if (action === "tap.cancel") {
+      if (payment.status === "cancelled") return reply({ ok: true, id });
+      if (payment.status !== "pending") throw new Error("Esta cobrança já foi registrada.");
+      if (input.confirmed_unpaid !== true) throw new Error("Confira que não houve pagamento antes de descartar.");
+      await db.batch([
+        db.prepare("INSERT INTO records(kind,id,data) VALUES('tap_finalized',?,?)").bind(id, JSON.stringify({ status: "cancelled" })),
+        putRecord(db, "tap_payments", id, { ...payment, status: "cancelled", cancelled_at: now() })
+      ]);
+      return reply({ ok: true, id });
+    }
+    if (action !== "tap.confirm") throw new Error("Operação Tap inválida.");
+    if (payment.status === "recorded") return reply({ ok: true, id, already_recorded: true });
+    if (payment.status !== "pending") throw new Error("Esta cobrança foi descartada.");
+    if (input.confirmed_received !== true) throw new Error("Confira o recebimento no aplicativo InfinitePay antes de registrar a venda.");
+    const nsu = String(input.nsu || "").trim(), aut = String(input.aut || "").trim();
+    if (!/^[a-zA-Z0-9-]{6,100}$/.test(nsu) || !/^[a-zA-Z0-9]{3,30}$/.test(aut)) throw new Error("Informe o identificador da transação e o código de autorização do comprovante.");
+    const receiptId = await sha256(`${payment.handle.toLowerCase()}:${nsu.toLowerCase()}`);
+    if (await readRecord(db, "tap_receipts", receiptId)) throw new Error("Este comprovante já foi usado em outra venda.");
+    tapPayment = { ...payment, status: "recorded", recorded_at: now(), verification: "operator_confirmed", nsu, aut, receipt_id: receiptId };
+    input = { action: "sale.checkout", id, destination: "sale", payment_method: "Digital", customer_name: payment.customer_name, note: `InfiniteTap · conferido pelo operador · NSU ${nsu}`, items: payment.items };
+    action = "sale.checkout";
+  }
 
   if (action === "device.create") {
     if (!["front", "kitchen"].includes(input.role)) throw new Error("Escolha Caixa ou Cozinha.");
@@ -939,16 +988,23 @@ async function mutate(request, env) {
     await db.batch(statements);
   } else if (action === "sale.checkout") {
     if (!admin && (input.destination === "account" || input.to_account === true)) throw new Error("O fiado está disponível somente no Admin. Use uma comanda.");
-    const items = await cartItems(db, input.items);
+    const items = tapPayment ? structuredClone(tapPayment.items) : await cartItems(db, input.items);
     const createdAt = now();
     const origin = await orderOrigin(db, input.origin_token);
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
     if (!open) throw new Error("Abra o caixa no Admin antes de registrar pedidos.");
     const cashSessionId = origin.cash_session_id || open.id;
+    if (tapPayment && tapPayment.cash_session_id !== cashSessionId) throw new Error("O caixa desta cobrança foi fechado. Não cobre novamente; concilie o recebimento no caixa original.");
     const customerName = (input.customer_name || "").trim();
     const note = (input.note || "").trim();
     const statements = [];
     const foodItems = items.filter((item) => item.category === "Comidas");
+    if (tapPayment) {
+      // Atomic unique inserts prevent duplicate sales and stock deductions, including concurrent retries.
+      statements.push(db.prepare("INSERT INTO records(kind,id,data) VALUES('tap_finalized',?,?)").bind(id, JSON.stringify({ status: "recorded" })));
+      statements.push(db.prepare("INSERT INTO records(kind,id,data) VALUES('tap_receipts',?,?)").bind(tapPayment.receipt_id, JSON.stringify({ order_id: id })));
+      statements.push(putRecord(db, "tap_payments", id, tapPayment));
+    }
     const shouldPrint = foodItems.length > 0;
     const orderId = id;
 
@@ -1022,6 +1078,11 @@ async function mutate(request, env) {
     }
     for (const item of items) {
       if (item.stock_usage.length || !item.menu_item.stock_controlled) continue;
+      if (tapPayment) {
+        const currentItem = await readRecord(db, "menu", item.menu_id);
+        if (!currentItem) throw new Error("Um produto da cobrança foi removido. Concilie o recebimento antes de continuar.");
+        item.menu_item = currentItem;
+      }
       const movement = stockMovement(db, item.menu_id, item.menu_item, "sale", item.quantity, { reason: "Venda", responsible: "Sistema", reference_id: orderId, legacy_menu: true });
       statements.push(putRecord(db, "menu", item.menu_id, item.menu_item), movement);
     }
@@ -1131,6 +1192,8 @@ async function mutate(request, env) {
     cash.movements = [...(cash.movements || []), { id: uid(), type: input.type, amount: amount(input.amount, "um valor", false), responsible: input.responsible.trim(), note: input.note.trim(), created_at: now() }];
     await putRecord(db, "cash", id, cash).run();
   } else if (action === "cash.close") {
+    const pendingTap = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='tap_payments' AND json_extract(data,'$.cash_session_id')=? AND json_extract(data,'$.status')='pending'").bind(id).first();
+    if (Number(pendingTap?.total || 0)) throw new Error("Há cobranças InfiniteTap pendentes. Confira ou descarte os pedidos em /tap-test.html antes de fechar o caixa.");
     const cash = await readRecord(db, "cash", id);
     if (!cash || cash.status !== "open") throw new Error("Caixa aberto não encontrado.");
     const kitchenOpen = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='kitchen' AND COALESCE(json_extract(data,'$.status'),'pending') NOT IN ('delivered','done','cancelled')").first();
