@@ -499,6 +499,12 @@ async function mutate(request, env) {
     if (statements.length) await db.batch(statements);
   } else if (action === "stock.item.save") {
     required(input.name, "o nome do insumo");
+    const normalizeStockName = name => String(name || "").trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
+    const normalizedName = normalizeStockName(input.name);
+    const duplicate = await db.prepare("SELECT id,data FROM records WHERE kind='stock_items' AND id<>?").bind(id).all();
+    if (duplicate.results.some(row => normalizeStockName(JSON.parse(row.data || "{}").name) === normalizedName)) {
+      throw new Error("Já existe um insumo com este nome. Selecione o item existente para apenas adicionar saldo.");
+    }
     const packageSize = input.package_size === "" || input.package_size == null ? null : stockNumber(input.package_size, "o conteúdo da embalagem", false);
     const portionSize = input.portion_size === "" || input.portion_size == null ? null : stockNumber(input.portion_size, "o porcionamento", false);
     const item = { ...(await readRecord(db, "stock_items", id) || {}), name: input.name.trim(), stock_category: ["Comida", "Bebida", "Descartável"].includes(input.stock_category) ? input.stock_category : "Bebida", unit: (input.unit || "un").trim(), package_size: packageSize, package_measure: packageSize == null ? "" : (input.package_measure || "ml").trim(), portion_size: portionSize, portion_measure: portionSize == null ? "" : (input.portion_measure || input.package_measure || "ml").trim(), stock_minimum: stockNumber(input.stock_minimum || 0, "o estoque mínimo"), cost_price: amount(input.cost_price || 0, "o custo"), sku: (input.sku || "").trim(), barcode: (input.barcode || "").trim(), supplier: (input.supplier || "").trim(), updated_at: now() };

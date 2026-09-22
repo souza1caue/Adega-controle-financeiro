@@ -63,3 +63,11 @@ test('existing item selection must match an actual saved item and its name',asyn
     assert.equal(result.status,400);assert.equal(f.balance('beer'),0);assert.equal(f.records('stock_movements').length,0);
   }
 });
+
+test('direct stock item saves reject duplicate names without changing existing items',async()=>{
+  const f=fixture();
+  const result=await f.call({action:'stock.item.save',name:'  cerveja  ',stock_category:'Bebida',unit:'un',stock_minimum:0,cost_price:4});
+  assert.equal(result.status,400);
+  assert.equal(f.records('stock_items').filter(item=>item.name.toLowerCase()==='cerveja').length,1);
+  assert.equal(f.balance('beer'),0);
+});

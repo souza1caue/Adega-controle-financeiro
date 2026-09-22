@@ -643,7 +643,7 @@ document.addEventListener("change",event=>{
     form.querySelector("[data-quick-existing]").value="";form.querySelector("[data-quick-name]").value="";
     unit.innerHTML=config.units.map(([value,label])=>`<option value="${value}">${label}</option>`).join("");
     if(config.units.some(([value])=>value===previous))unit.value=previous;
-    form.querySelector("[data-quick-name]").placeholder=config.placeholder;updateQuickStockUnit(form);
+    form.querySelector("[data-quick-name]").placeholder=config.placeholder;updateQuickStockUnit(form);updateQuickStockDuplicateWarning(form);
   }
   if(event.target.matches("[data-purchase-template]")){
     const template=stockTemplates[event.target.value];if(!template)return;
@@ -730,9 +730,26 @@ function selectExistingQuickStockItem(form,id){
   form.querySelector("[data-quick-package]").value=String(Math.max(1,Number(item?.units_per_package)||1));
   const cost=form.querySelector("[data-quick-cost]"),total=form.querySelector("[data-quick-total]");cost.value=item?String(Number(item.cost_price||0)):"";total.value="";form.dataset.costSource="unit";
   updateQuickStockUnit(form);
+  updateQuickStockDuplicateWarning(form);
+}
+function updateQuickStockDuplicateWarning(form){
+  const warning=form?.querySelector("[data-quick-duplicate-warning]"),button=form?.querySelector("[data-quick-add]"),name=form?.querySelector("[data-quick-name]")?.value||"",selected=form?.querySelector("[data-quick-existing]")?.value||"";
+  if(!warning||!button)return;
+  const normalize=value=>String(value||"").trim().normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLocaleLowerCase("pt-BR");
+  const match=name&&entries(data.stock_items).find(([id,item])=>id!==selected&&normalize(item.name)===normalize(name));
+  warning.hidden=!match;
+  warning.textContent=match?`Já existe “${match[1].name}”. Selecione esse item no campo ao lado para adicionar saldo.`:"";
+  button.disabled=Boolean(match);
+}
+function prepareQuickStockForm(form){
+  if(!form||form.querySelector("[data-quick-duplicate-warning]"))return;
+  const name=form.querySelector("[data-quick-name]"),existing=form.querySelector("[data-quick-existing]");
+  name?.insertAdjacentHTML("afterend",'<small class="muted">Use o mesmo nome para localizar um item já cadastrado.</small><p class="quick-stock-duplicate-warning" data-quick-duplicate-warning hidden></p>');
+  if(existing){const label=existing.closest(".field")?.querySelector("label");if(label)label.textContent="Item já cadastrado?";const first=existing.querySelector("option");if(first)first.textContent="Não, cadastrar novo";existing.closest(".field")?.insertAdjacentHTML("beforeend",'<small class="muted">Escolha um item existente para adicionar saldo sem criar duplicata.</small>')}
+  updateQuickStockDuplicateWarning(form);
 }
 function resetQuickStockEditor(category){
-  const host=modalBody.querySelector("[data-quick-editor-host]");host.innerHTML=quickStockRow(category);quickStockEditing=-1;updateQuickStockUnit(host.querySelector("form"));
+  const host=modalBody.querySelector("[data-quick-editor-host]");host.innerHTML=quickStockRow(category);quickStockEditing=-1;prepareQuickStockForm(host.querySelector("form"));updateQuickStockUnit(host.querySelector("form"));
 }
 function collectQuickStockDraft(form){
   const value=key=>form.querySelector(`[data-quick-${key}]`).value;
@@ -779,7 +796,7 @@ async function saveQuickStockQueue(button){
 function quickStockDialog(){
   pendingQuickStockItems=[];quickStockEditing=-1;
   openModal(`<div class="quick-stock-heading"><span class="eyebrow">Cadastro de estoque</span><h2>Adicionar itens</h2><p class="muted">Preencha o item, adicione à lista e salve tudo de uma vez.</p></div><div class="quick-stock-workspace"><div data-quick-editor-host>${quickStockRow()}</div><aside class="quick-stock-sidebar"><header><h3>Itens adicionados</h3><span data-quick-queue-count></span></header><div data-quick-queue></div><footer><div><span>Custo total</span><b data-quick-queue-total></b></div><button type="button" class="primary" data-quick-save>Salvar no estoque</button><small>O estoque será atualizado ao salvar esta lista.</small></footer></aside></div>`);
-  modal.classList.add("quick-stock-dialog");updateQuickStockUnit(modalBody.querySelector("[data-form='quick-stock']"));renderQuickStockQueue();modalBody.querySelector("[data-quick-name]").focus();
+  modal.classList.add("quick-stock-dialog");prepareQuickStockForm(modalBody.querySelector("[data-form='quick-stock']"));updateQuickStockUnit(modalBody.querySelector("[data-form='quick-stock']"));renderQuickStockQueue();modalBody.querySelector("[data-quick-name]").focus();
 }
 
 stockItemEditDialog=function(id){stockItemEditDialogWithPortion(id);const form=modalBody.querySelector("[data-form='stock-item-details']"),item=data.stock_items[id],stockCategory=item?.stock_category||"Bebida";form?.querySelector("[name='portion_size']")?.closest(".form-row")?.remove();form?.elements.name?.closest(".field")?.insertAdjacentHTML("afterend",`<div class="field"><label>Categoria no estoque</label><select name="stock_category"><option ${stockCategory==="Comida"?'selected':''}>Comida</option><option ${stockCategory==="Bebida"?'selected':''}>Bebida</option><option value="Descartável" ${stockCategory==="Descartável"?'selected':''}>Embalagem/Descartável</option></select></div>`)}
@@ -1179,6 +1196,7 @@ start();
 
 document.addEventListener("input",event=>{
   if(!event.target.closest("[data-form='quick-stock']"))return;
+  if(event.target.matches("[data-quick-name]"))updateQuickStockDuplicateWarning(event.target.form);
   if(event.target.matches("[data-quick-cost]"))updateQuickStockCosts(event.target.form,"unit");
   else if(event.target.matches("[data-quick-total]"))updateQuickStockCosts(event.target.form,"total");
   else if(event.target.matches("[data-quick-quantity],[data-quick-bundle]"))updateQuickStockUnit(event.target.form);
