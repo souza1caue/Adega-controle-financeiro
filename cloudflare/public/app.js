@@ -27,7 +27,7 @@ let printMode = localStorage.getItem("printMode") || "test";
 let printingBusy = false;
 let kitchenAudioContext = null, knownKitchenOrderIds = null;
 let knownFrontKitchenStatuses = null;
-let saleCategory = "Mais vendidos", saleSearch = "", checkoutSubmitting = false, frontKitchenFilter = "ready", frontKitchenHistoryOpen = false, kitchenHistoryOpen = false, staffCashId = "";
+let saleCategory = "Todos", saleSearch = "", checkoutSubmitting = false, frontKitchenFilter = "ready", frontKitchenHistoryOpen = false, kitchenHistoryOpen = false, staffCashId = "";
 let accountTypeView = "customer";
 let accountSearch = "";
 let stockView = "current";
@@ -235,6 +235,7 @@ function draw(){
   if(module==="Frente de caixa"){
     page ||= "sales"; const ready=entries(data.kitchen).filter(([,o])=>(o.status||"pending")==="ready").length; setupNav([["sales","Saídas"],["accounts","Comandas"],["frontKitchen",`Pedidos${ready?` (${ready})`:""}`]]);
     app.innerHTML=fiadoLabels(page==="sales"?salesPage():page==="accounts"?accountsPage():frontKitchenPage());
+    centerSaleCategory();
     refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
   }else if(module==="Cozinha"){
     page="kitchen";setupNav([]);app.innerHTML=fiadoLabels(kitchenPage());refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
@@ -258,13 +259,19 @@ function draw(){
 function adminShell(content){const groups=[["Operação",[["cash","Controle de caixa"],["summary","Visão geral"],["stock","Estoque"]]],["Cadastros",[["menu","Cardápio"],["accounts","Fiado"],["staff","Equipe, diárias e eventos"],["devices","Dispositivos"]]]];return `<div class="admin-layout"><aside class="admin-sidebar"><div class="admin-identity"><span class="eyebrow">Administração</span><b>Controle da Adega</b></div><div class="admin-alert-control">${notificationAction()}</div>${groups.map(([label,items])=>`<div class="admin-nav-group"><small>${label}</small>${items.map(([key,text])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${text}</button>`).join("")}</div>`).join("")}<button class="ghost admin-logout" data-admin-logout>Sair do Admin</button></aside><section class="admin-content">${content}</section></div>`}
 
 function saleGroup(item){const name=(item.name||"").toLocaleLowerCase();if(category(item)==="Comidas")return"Porções";if(/cerveja|heineken|skol|brahma|original|budweiser|lata|latão|long neck/.test(name))return"Cervejas";if(/copão|dose|drink|gin|vodka|whisky|whiskey|jack|cavalo/.test(name))return"Drinks";if(/água|agua|coca|guaraná|guarana|gelo|red bull|energético|energetico|zero álcool|zero alcool|refrigerante|suco/.test(name))return"Sem álcool";return"Bebidas"}
+function centerSaleCategory(){
+  if(!window.matchMedia("(max-width:700px)").matches)return;
+  const tabs=app.querySelector(".category-tabs"),selected=tabs?.querySelector('[aria-pressed="true"]');
+  if(!selected)return;
+  const container=tabs.getBoundingClientRect(),button=selected.getBoundingClientRect();
+  tabs.scrollLeft+=button.left+button.width/2-container.left-tabs.clientWidth/2;
+}
+window.addEventListener("resize",centerSaleCategory);
 function salesPage(){
-  const open=activeCash(),allProducts=entries(data.menu),sold=new Map();
-  for(const[,sale]of entries(data.sales))if(!sale.voided_at&&sale.menu_id)sold.set(sale.menu_id,(sold.get(sale.menu_id)||0)+Number(sale.quantity||0));
-  const ranked=allProducts.slice().sort((a,b)=>(sold.get(b[0])||0)-(sold.get(a[0])||0)||a[1].name.localeCompare(b[1].name)),topIds=new Set(ranked.slice(0,6).map(([id])=>id));
-  const query=saleSearch.toLocaleLowerCase(),products=allProducts.filter(([id,item])=>(saleCategory==="Todos"||saleCategory==="Mais vendidos"&&topIds.has(id)||saleGroup(item)===saleCategory)&&(!query||item.name.toLocaleLowerCase().includes(query))).sort((a,b)=>saleCategory==="Mais vendidos"?(sold.get(b[0])||0)-(sold.get(a[0])||0):a[1].name.localeCompare(b[1].name));
-  const tabs=["Mais vendidos","Todos","Porções","Cervejas","Drinks","Sem álcool","Bebidas"],groupClasses={"Porções":"food","Cervejas":"beer","Drinks":"drink","Sem álcool":"soft","Bebidas":"beverage"},tile=([id,item])=>{const state=productStockState(id),available=state.available,out=saleStockBlocked(state),group=saleGroup(item);return`<article class="product-wrap product-${groupClasses[group]||'beverage'} ${out?'stock-out':''}"><button class="product-tile" data-cart-add="${id}" ${out?'disabled':''}><span class="product-category">${esc(group)}</span><b>${esc(item.name)}</b><strong>${money(item.price)}</strong><small>${esc(saleStockLabel(state))}</small><span class="product-add-hint">+ Adicionar</span></button></article>`};
-  const catalog=stockPolicyNotice()+`<div class="sales-toolbar"><label class="product-search"><span aria-hidden="true">⌕</span><input data-product-search value="${esc(saleSearch)}" placeholder="Buscar produto pelo nome..." autocomplete="off" aria-label="Buscar produto"></label><div class="category-tabs">${tabs.map(value=>`<button data-sale-category="${value}" class="${saleCategory===value?'nav-active':''}">${value}</button>`).join("")}</div></div>${saleCategory==="Mais vendidos"&&!saleSearch?`<div class="catalog-title"><div><span class="eyebrow">Acesso rápido</span><h2>Mais vendidos</h2></div><small>Os produtos mais pedidos aparecem primeiro</small></div>`:""}<div class="product-grid">${products.map(tile).join("")||empty("Nenhum produto encontrado.")}</div>`;
+  const open=activeCash(),allProducts=entries(data.menu);
+  const query=saleSearch.toLocaleLowerCase(),products=allProducts.filter(([,item])=>(saleCategory==="Todos"||category(item)===saleCategory)&&(!query||item.name.toLocaleLowerCase().includes(query))).sort((a,b)=>a[1].name.localeCompare(b[1].name));
+  const tabs=["Todos","Comidas","Bebidas"],groupClasses={"Porções":"food","Cervejas":"beer","Drinks":"drink","Sem álcool":"soft","Bebidas":"beverage"},tile=([id,item])=>{const state=productStockState(id),available=state.available,out=saleStockBlocked(state),group=saleGroup(item);return`<article class="product-wrap product-${groupClasses[group]||'beverage'} ${out?'stock-out':''}"><button class="product-tile" data-cart-add="${id}" ${out?'disabled':''}><span class="product-category">${esc(group)}</span><b>${esc(item.name)}</b><strong>${money(item.price)}</strong><small>${esc(saleStockLabel(state))}</small><span class="product-add-hint">+ Adicionar</span></button></article>`};
+  const catalog=stockPolicyNotice()+`<div class="sales-toolbar"><label class="product-search"><span aria-hidden="true">⌕</span><input data-product-search value="${esc(saleSearch)}" placeholder="Buscar produto pelo nome..." autocomplete="off" aria-label="Buscar produto"></label><div class="category-tabs">${tabs.map(value=>`<button data-sale-category="${value}" aria-pressed="${saleCategory===value}" class="${saleCategory===value?'nav-active':''}">${value}</button>`).join("")}</div></div><div class="product-grid">${products.map(tile).join("")||empty("Nenhum produto encontrado.")}</div>`;
   const lines=cartLines();
   const cartPanel=`<aside class="cart-panel"><div class="cart-title"><div><span class="eyebrow">Pedido atual</span><h2>${cartQuantity()} ${cartQuantity()===1?'item':'itens'}</h2></div>${lines.length?`<button class="ghost" data-cart-clear>Limpar</button>`:""}</div><div class="cart-lines">${lines.map(([id,line])=>{const item=data.menu[id];return `<div class="cart-line"><div><b>${esc(item.name)}</b><small>${money(item.price)} cada</small></div><div class="quantity-control"><button data-cart-minus="${id}" aria-label="Diminuir">−</button><b>${line.quantity}</b><button data-cart-add="${id}" aria-label="Aumentar">+</button></div><b>${money(Number(line.quantity)*Number(item.price))}</b></div>`}).join("")||`<div class="cart-empty"><span>＋</span><b>Pedido vazio</b><small>Toque em um produto para adicionar.</small></div>`}</div><div class="cart-checkout">${stockOrderWarning(lines)}<div class="cart-total"><span>Total</span><b>${money(cartTotal())}</b></div><button class="primary checkout-button" data-open-checkout ${lines.length?'':'disabled'}>Finalizar pedido · ${money(cartTotal())}</button></div></aside>`;
   const mobileCheckout=lines.length?`<button class="mobile-checkout" data-open-mobile-cart><span>Ver pedido · ${cartQuantity()} itens</span><b>${money(cartTotal())}</b></button>`:"";

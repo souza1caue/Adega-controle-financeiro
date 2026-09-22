@@ -195,3 +195,6 @@ dialog.quick-stock-dialog{width:min(1220px,calc(100% - 32px));max-width:none}
 
 .quick-stock-name-choice{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:14px;align-items:end}
 @media(max-width:800px){.quick-stock-name-choice{grid-template-columns:1fr}}
+
+/* Keep every selected catalog filter centered, including the first and last. */
+@media(max-width:700px){.category-tabs{width:100%;margin-right:0;padding:0 max(0px,calc(50% - 56px)) 4px;scroll-padding-inline:max(0px,calc(50% - 56px));scroll-snap-type:x proximity}.category-tabs button{flex:0 0 112px;min-height:44px;scroll-snap-align:center;text-align:center}}
