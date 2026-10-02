@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Frente de caixa · Prévia mobile</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100dvh;display:grid;place-content:center;gap:14px;background:#20221e;color:#f5f1e7;font:14px system-ui;text-align:center;padding:20px}header{display:flex;justify-content:space-between;align-items:center;gap:20px}p{margin:0;color:#aaa99d}a{color:#d8aa49}iframe{display:block;width:390px;height:844px;max-width:calc(100vw - 40px);border:1px solid #55594b;border-radius:24px;background:#11120f;box-shadow:0 20px 70px #0006}button{font:inherit;color:#f5f1e7;background:#34372e;border:1px solid #55594b;border-radius:8px;padding:8px 12px;cursor:pointer}
+  </style>
+</head>
+<body>
+  <header><div><b>Prévia mobile</b><p>390 × 844 · vertical</p></div><button id="refresh">Atualizar</button></header>
+  <iframe src="/" title="Sistema na largura de um celular"></iframe>
+  <p>Selecione Frente de caixa para acompanhar os ajustes.</p>
+  <script>document.querySelector('#refresh').addEventListener('click',()=>{document.querySelector('iframe').contentWindow.location.reload()});</script>
+</body>
+</html>

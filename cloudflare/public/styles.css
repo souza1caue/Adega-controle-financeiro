@@ -207,3 +207,62 @@ dialog.quick-stock-dialog{width:min(1220px,calc(100% - 32px));max-width:none}
 @media(max-width:700px){.stock-history-search{flex-wrap:wrap}.stock-history-search input{flex-basis:100%}.stock-item-history-entry>summary{grid-template-columns:minmax(0,1fr) auto}.stock-item-history-entry>summary strong{grid-column:1/-1;text-align:left}.stock-item-history-movement{grid-template-columns:auto minmax(0,1fr)}.stock-item-history-movement>span:last-child{grid-column:2}}
 
 .admin-kitchen-link{display:block;margin-top:18px;padding:12px;color:var(--gold);text-decoration:none;border:1px solid var(--line);border-radius:10px;text-align:center}.admin-kitchen-link:hover{border-color:var(--gold)}.kitchen-access{max-width:520px;margin-inline:auto}.kitchen-access form{text-align:left}
+
+/* Frente de caixa: navegação e catálogo com a mesma lógica no desktop e mobile. */
+.front-app{background:var(--bg)}
+.front-app .brand small{display:none}
+.front-app .topbar{min-height:68px;align-items:center;flex-direction:row}
+.front-app main{width:min(1440px,calc(100% - 40px));margin:24px auto 40px}
+.front-app nav button{min-height:44px}
+.pos-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}
+.pos-header h1{font-size:28px;margin:0 0 6px}
+.pos-cash-status{font-size:12px;color:#ffb5aa;display:flex;align-items:center;gap:6px}
+.pos-cash-status:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.pos-cash-status.is-open{color:#a6cda0}
+.pos-options{position:relative;flex-shrink:0}
+.pos-options summary{cursor:pointer;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-size:13px;list-style:none}
+.pos-options summary::-webkit-details-marker{display:none}
+.pos-options[open] summary{border-color:var(--gold)}
+.pos-options>div{position:absolute;right:0;top:48px;z-index:15;min-width:220px;display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--panel);box-shadow:0 12px 35px #0008}
+.pos-ready{display:flex;justify-content:space-between;gap:12px;width:100%;margin-bottom:12px;border-color:#426a41;color:#c4f4cf;background:#203522;text-align:left}
+.front-app .sales-layout{grid-template-columns:minmax(0,1fr) 340px;gap:24px}
+.front-app .sales-toolbar{position:static;padding:0 0 16px;margin:0;background:none}
+.front-app .category-tabs{width:100%;margin:0;padding:0 0 2px;gap:8px;scroll-padding:0;scroll-snap-type:none}
+.front-app .category-tabs button{flex:0 0 auto;min-width:88px;min-height:42px;border-radius:24px}
+.front-app .category-tabs .nav-active{background:var(--gold);color:#17140d}
+.front-app .product-grid{grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:10px}
+.front-app .product-wrap{min-height:138px}
+.front-app .product-tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;grid-template-rows:minmax(40px,1fr) auto auto;gap:8px;padding:16px}
+.front-app .product-category{display:none}
+.front-app .product-tile>b{font-size:15px}
+.front-app .product-tile>strong{font-size:20px}
+.front-app .product-add-hint{display:none}
+.front-app .cart-panel{top:92px;background:var(--panel);border-radius:14px;box-shadow:none}
+.front-app .cart-title .eyebrow{font-size:10px}
+.front-app .cart-title h2{font-size:22px}
+.front-app .cart-checkout{background:var(--panel)}
+.front-app .cash-closed-alert{box-shadow:none;padding:12px 14px;margin:0 0 16px}
+.front-app .cash-closed-alert b{font-size:15px}
+.front-app .cash-closed-alert p{font-size:13px}
+@media(max-width:800px){.front-app .brand span{font-size:12px}.front-app .brand img{width:32px;height:32px}.front-app .topbar{padding:10px 16px;gap:10px}.front-app nav{margin-left:auto;width:auto}.front-app .sales-layout{grid-template-columns:minmax(0,1fr) 290px;gap:16px}}
+@media(max-width:700px){
+  .front-app .topbar{min-height:56px;padding:8px 14px}
+  .front-app .brand span{font-size:14px}
+  .front-app nav{position:fixed;left:0;right:0;bottom:0;z-index:14;display:flex;gap:4px;width:100%;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:#171914;border-top:1px solid var(--line);overflow:auto}
+  .front-app nav button{flex:1 0 auto;min-height:44px;font-size:12px;border-color:transparent;background:transparent}
+  .front-app nav .nav-active{background:#d8aa491c;color:var(--gold)}
+  .front-app main{width:calc(100% - 28px);margin:18px auto calc(160px + env(safe-area-inset-bottom))}
+  .pos-header h1{font-size:24px}
+  .pos-header{margin-bottom:18px}
+  .pos-options summary{font-size:12px;padding:9px 10px}
+  .front-app .sales-layout{display:block;padding-bottom:0}
+  .front-app .product-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .front-app .product-wrap{min-height:128px}
+  .front-app .product-tile{padding:14px 12px}
+  .front-app .product-tile>b{overflow-wrap:anywhere}
+  .front-app .product-tile>small{white-space:normal}
+  .front-app .cart-panel{display:none}
+  .front-app .mobile-checkout{bottom:calc(76px + env(safe-area-inset-bottom));left:14px;right:14px;padding:16px;border-radius:12px;box-shadow:0 6px 24px #0008}
+  .front-app #toast{bottom:calc(145px + env(safe-area-inset-bottom));left:14px;right:14px}
+  .front-app dialog{border-radius:18px;padding:20px;max-height:calc(100dvh - 32px)}
+}
