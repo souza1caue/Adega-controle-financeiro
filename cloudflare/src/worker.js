@@ -527,10 +527,16 @@ async function mutate(request, env) {
     if (!lines.length || lines.length > 50) throw new Error("A compra deve ter entre 1 e 50 produtos.");
     const statements = [], usedIds = new Set(), purchaseId = uid();
     const normalizeName = name => String(name || "").trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
-    const existing = quickCreate ? await db.prepare("SELECT data FROM records WHERE kind='stock_items'").all() : { results: [] };
+    const existing = await db.prepare("SELECT data FROM records WHERE kind='stock_items'").all();
     const usedNames = new Set(existing.results.map(row => normalizeName(JSON.parse(row.data).name)));
     let created = 0, totalUnits = 0, totalCost = 0;
     for (const [index, line] of lines.entries()) {
+      if (!quickCreate && !line.id) {
+        required(line.name, `o nome do produto ${index + 1}`);
+        const key = normalizeName(line.name);
+        if (usedNames.has(key)) throw new Error(`${line.name.trim()} já está cadastrado ou repetido na lista. Selecione o item existente para adicionar saldo.`);
+        usedNames.add(key);
+      }
       if (quickCreate) {
         required(line.name, `o nome do produto ${index + 1}`);
         const key = normalizeName(line.name);
@@ -593,6 +599,7 @@ async function mutate(request, env) {
       if (!quickCreate || line.id) item.purchase_count = Number(item.purchase_count || 0) + 1;
       if (bulkPackage) { item.package_size = Number(line.content_per_unit); item.package_measure = contentUnit; }
       item.updated_at = now();
+      if (line.supplier != null) item.supplier = String(line.supplier).trim();
       if (entryCost != null) {
         item.cost_price = averageStockCost(current, item.cost_price, movementQuantity, entryCost);
         item.last_cost_price = entryCost;
