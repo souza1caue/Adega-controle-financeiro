@@ -740,12 +740,17 @@ async function mutate(request, env) {
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
     const accountType = !admin ? "tab" : input.account_type === "tab" ? "tab" : input.account_type === "owner" ? "owner" : "customer";
     if (accountType === "tab" && !open) throw new Error("Abra o caixa antes de abrir uma comanda.");
-    await putRecord(db, "accounts", id, { account_type: accountType, customer_name: input.customer_name.trim(), note: (input.note || "").trim(), opening_balance: accountType === "tab" ? 0 : amount(input.opening_balance || 0, "o saldo inicial"), opening_balance_at: now(), cash_session_id: accountType === "tab" ? open.id : "", status: accountType === "tab" ? "open" : undefined, items: [], payments_total: 0, created_at: now() }).run();
+    await putRecord(db, "accounts", id, { account_type: accountType, owner_pricing: accountType === "tab" && input.owner_pricing === true, customer_name: input.customer_name.trim(), note: (input.note || "").trim(), opening_balance: accountType === "tab" ? 0 : amount(input.opening_balance || 0, "o saldo inicial"), opening_balance_at: now(), cash_session_id: accountType === "tab" ? open.id : "", status: accountType === "tab" ? "open" : undefined, items: [], payments_total: 0, created_at: now() }).run();
   } else if (action === "account.update") {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Fiado não encontrado.");
     if (!admin && account.account_type !== "tab") throw new Error("O fiado está disponível somente no Admin.");
     required(input.customer_name, "o nome do cliente");
+    if (account.account_type === "tab" && input.owner_pricing !== undefined) {
+      const ownerPricing = input.owner_pricing === true;
+      if (ownerPricing !== Boolean(account.owner_pricing) && ((account.items || []).length || Number(account.payments_total || 0) > 0 || account.hosted_event_id)) throw new Error("O tipo da comanda só pode ser alterado antes do primeiro lançamento.");
+      account.owner_pricing = ownerPricing;
+    }
     account.customer_name = input.customer_name.trim();
     account.account_type = account.account_type === "tab" ? "tab" : input.account_type === "owner" ? "owner" : "customer";
     account.note = (input.note || "").trim();
@@ -765,8 +770,10 @@ async function mutate(request, env) {
     const origin = await orderOrigin(db, input.origin_token);
     const entry = { id: uid(), menu_id: input.menu_id || "", description: input.description.trim(), quantity: quantity(input.quantity), price: amount(input.price, "o preço"), note: (input.note || "").trim(), created_at: createdAt, order_id: orderId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "", stock_usage: [] };
     if (entry.menu_id) entry.stock_usage = await recipeUsage(db, entry.menu_id, entry.quantity);
-    if (account.account_type === "owner" && entry.menu_id) {
+    if (account.account_type === "tab" && account.owner_pricing && !entry.menu_id) throw new Error("Selecione um produto com custo cadastrado para a comanda de proprietário.");
+    if ((account.account_type === "owner" || (account.account_type === "tab" && account.owner_pricing)) && entry.menu_id) {
       const menuItem = await readRecord(db, "menu", entry.menu_id);
+      if (account.owner_pricing && entry.stock_usage.some(usage => !(Number(usage.unit_cost) > 0))) throw new Error(`Configure o custo de todos os insumos de ${entry.description} antes de lançar na comanda de proprietário.`);
       const totalCost = entry.stock_usage.length ? entry.stock_usage.reduce((sum, usage) => sum + Number(usage.quantity || 0) * Number(usage.unit_cost || 0), 0) : Number(menuItem?.cost_price || 0) * entry.quantity;
       if (totalCost <= 0) throw new Error(`Configure o custo ou os insumos de ${entry.description} antes de lançar na ficha de proprietário.`);
       entry.price = Math.round(totalCost / entry.quantity * 100) / 100;
@@ -1020,13 +1027,15 @@ async function mutate(request, env) {
       if (!account) {
         required(customerName, input.destination === "tab" ? "o nome para abrir a comanda" : "o cliente para criar o fiado");
         account = input.destination === "tab"
-          ? { account_type: "tab", customer_name: customerName, note: "", opening_balance: 0, created_at: createdAt, cash_session_id: cashSessionId, status: "open", items: [], payments_total: 0 }
+          ? { account_type: "tab", owner_pricing: input.owner_pricing === true, customer_name: customerName, note: "", opening_balance: 0, created_at: createdAt, cash_session_id: cashSessionId, status: "open", items: [], payments_total: 0 }
           : { account_type: input.account_type === "owner" ? "owner" : "customer", customer_name: customerName, note: "", opening_balance: 0, created_at: createdAt.slice(0, 10), items: [], payments_total: 0 };
       }
       if (input.destination === "tab" && (account.account_type !== "tab" || account.cash_session_id !== cashSessionId || account.status === "closed")) throw new Error("Escolha uma comanda aberta deste caixa.");
       const orderCustomerName = String(account.customer_name || customerName).trim();
       required(orderCustomerName, "o nome do cliente da comanda");
-      const accountEntries = items.map((item) => { const ownerCost = item.stock_usage.length ? item.stock_usage.reduce((sum, usage) => sum + Number(usage.quantity || 0) * Number(usage.unit_cost || 0), 0) : Number(item.menu_item?.cost_price || 0); if (account.account_type === "owner" && ownerCost <= 0) throw new Error(`Configure o custo ou os insumos de ${item.description} antes de lançar na ficha de proprietário.`); return { id: uid(), menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: account.account_type === "owner" ? Math.round(ownerCost * 100) / 100 : item.price, note: item.note, created_at: createdAt, order_id: orderId, cash_session_id: cashSessionId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }; });
+      const ownerPricing = account.account_type === "owner" || (account.account_type === "tab" && account.owner_pricing === true);
+      if (account.owner_pricing && items.some(item => item.stock_usage.some(usage => !(Number(usage.unit_cost) > 0)))) throw new Error("Configure o custo de todos os insumos antes de lançar na comanda de proprietário.");
+      const accountEntries = items.map((item) => { const ownerCost = item.stock_usage.length ? item.stock_usage.reduce((sum, usage) => sum + Number(usage.quantity || 0) * Number(usage.unit_cost || 0), 0) : Number(item.menu_item?.cost_price || 0); if (ownerPricing && ownerCost <= 0) throw new Error(`Configure o custo ou os insumos de ${item.description} antes de lançar na ficha de proprietário.`); return { id: uid(), menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: ownerPricing ? Math.round(ownerCost * 100) / 100 : item.price, note: item.note, created_at: createdAt, order_id: orderId, cash_session_id: cashSessionId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }; });
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
       for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, item_category: entry.item_category, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: orderCustomerName, payment_method: account.account_type === "tab" ? "Comanda" : "Caderneta", account_id: accountId, account_type: account.account_type || "customer", account_item_id: entry.id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
