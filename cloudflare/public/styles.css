@@ -266,3 +266,13 @@ dialog.quick-stock-dialog{width:min(1220px,calc(100% - 32px));max-width:none}
   .front-app #toast{bottom:calc(145px + env(safe-area-inset-bottom));left:14px;right:14px}
   .front-app dialog{border-radius:18px;padding:20px;max-height:calc(100dvh - 32px)}
 }
+
+/* Owner tab option: keep the description aligned with its title. */
+.owner-pricing-option{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:start;gap:12px;width:100%;margin:14px 0;padding:14px 16px;background:var(--panel2);border:1px solid var(--line);border-radius:12px;cursor:pointer;text-align:left}
+.owner-pricing-option input[type="checkbox"]{width:18px;height:18px;margin:2px 0 0;padding:0;accent-color:var(--gold)}
+.owner-pricing-copy{display:grid;gap:5px;min-width:0}
+.owner-pricing-copy strong{font-size:14px;font-weight:700;line-height:1.4;color:var(--text)}
+.owner-pricing-copy small{font-size:12px;font-weight:400;line-height:1.5;color:var(--muted)}
+.owner-pricing-option:has(input:checked){border-color:var(--gold);background:#2a281d}
+.owner-pricing-option:focus-within{outline:2px solid var(--gold);outline-offset:3px}
+@media(max-width:520px){.owner-pricing-option{gap:10px;padding:12px;margin:12px 0}}
