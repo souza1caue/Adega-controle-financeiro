@@ -234,8 +234,10 @@ function setupNav(items){nav.innerHTML=fiadoLabels(items.map(([key,label])=>`<bu
 function draw(){
   const stockSearchInput=page==="stock"&&document.activeElement?.matches?.("[data-stock-search]")?document.activeElement:null;
   const stockHistorySearchInput=page==="stock"&&document.activeElement?.matches?.("[data-stock-history-search]")?document.activeElement:null;
+  const cashHistorySearchInput=page==="cash"&&document.activeElement?.matches?.("[data-cash-history-search]")?document.activeElement:null;
   const stockSearchSelection=stockSearchInput?[stockSearchInput.selectionStart,stockSearchInput.selectionEnd]:null;
   const stockHistorySearchSelection=stockHistorySearchInput?[stockHistorySearchInput.selectionStart,stockHistorySearchInput.selectionEnd]:null;
+  const cashHistorySearchSelection=cashHistorySearchInput?[cashHistorySearchInput.selectionStart,cashHistorySearchInput.selectionEnd]:null;
   clearInterval(refreshTimer);
   document.body.classList.toggle("front-app",module==="Frente de caixa");
   app.classList.toggle("bagaco-operation",activeCash()?.[1]?.project_code==="bagaco_laranja");
@@ -265,6 +267,7 @@ function draw(){
   }
   if(stockSearchSelection){const input=app.querySelector("[data-stock-search]");if(input){input.focus({preventScroll:true});input.setSelectionRange(...stockSearchSelection)}}
   if(stockHistorySearchSelection){const input=app.querySelector("[data-stock-history-search]");if(input){input.focus({preventScroll:true});input.setSelectionRange(...stockHistorySearchSelection)}}
+  if(cashHistorySearchSelection){const input=app.querySelector("[data-cash-history-search]");if(input){input.focus({preventScroll:true});input.setSelectionRange(...cashHistorySearchSelection)}}
 }
 
 function adminShell(content){const groups=[["Operação",[["cash","Caixa"],["stock","Estoque"]]],["Cadastros",[["menu","Cardápio"],["accounts","Fiado"],["staff","Equipe, diárias e eventos"]]]];return `<div class="admin-layout"><aside class="admin-sidebar"><div class="admin-identity"><span class="eyebrow">Administração</span><b>Controle da Adega</b></div><div class="admin-alert-control">${notificationAction()}</div>${groups.map(([label,items])=>`<div class="admin-nav-group"><small>${label}</small>${items.map(([key,text])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${text}</button>`).join("")}</div>`).join("")}<a class="admin-kitchen-link" href="/?area=cozinha" target="_blank" rel="noopener">Abrir cozinha ↗</a><button class="ghost admin-logout" data-admin-logout>Sair do Admin</button></aside><section class="admin-content">${content}</section></div>`}
@@ -897,7 +900,7 @@ function unifiedCashPage(){
   const shell=document.createElement("div");
   shell.innerHTML=cashPage();
   const historyBody=shell.querySelector(".cash-current-sales .cash-history-body");
-  if(historyBody)historyBody.insertAdjacentHTML("afterbegin",`<form class="cash-history-search" data-form="cash-history-search"><input name="query" value="${esc(cashHistorySearch)}" placeholder="Buscar item vendido..." aria-label="Buscar no histórico do caixa" autocomplete="off"><button type="submit">Buscar</button>${cashHistorySearch?`<button type="button" data-clear-cash-history-search>Limpar</button>`:""}</form>`);
+  if(historyBody)historyBody.insertAdjacentHTML("afterbegin",`<form class="cash-history-search" data-form="cash-history-search"><input name="query" data-cash-history-search value="${esc(cashHistorySearch)}" placeholder="Buscar item vendido..." aria-label="Buscar no histórico do caixa" autocomplete="off"><button type="submit">Buscar</button>${cashHistorySearch?`<button type="button" data-clear-cash-history-search>Limpar</button>`:""}</form>`);
   const title=shell.querySelector("h1");if(title)title.textContent="Caixa";
   const open=activeCash(),current=shell.querySelector(".cash-current");
   if(open&&current){
@@ -1034,7 +1037,7 @@ document.addEventListener("click",async event=>{
     else if(el.dataset.stockView){stockView=el.dataset.stockView;draw()}
     else if(el.hasAttribute("data-clear-stock-search")){clearTimeout(searchRenderTimer);stockSearch="";draw();app.querySelector("[data-stock-search]")?.focus()}
     else if(el.hasAttribute("data-clear-stock-history-search")){clearTimeout(searchRenderTimer);stockHistorySearch="";stockHistoryOpen=true;draw();app.querySelector("[data-stock-history-search]")?.focus()}
-    else if(el.hasAttribute("data-clear-cash-history-search")){clearTimeout(searchRenderTimer);cashHistorySearch="";cashHistoryOpen=true;draw()}
+    else if(el.hasAttribute("data-clear-cash-history-search")){clearTimeout(searchRenderTimer);cashHistorySearch="";cashHistoryOpen=true;draw();app.querySelector("[data-cash-history-search]")?.focus()}
     else if(el.hasAttribute("data-new-device"))deviceDialog();
     else if(el.hasAttribute("data-new-hosted-event"))hostedEventDialog("",el.dataset.newHostedEvent||"hosted");
     else if(el.dataset.editHostedEvent)hostedEventDialog(el.dataset.editHostedEvent);
@@ -1126,7 +1129,7 @@ document.addEventListener("submit",async event=>{
     }
     if(form.dataset.form==="stock-search"){clearTimeout(searchRenderTimer);stockSearch=fd.query.trim();draw();app.querySelector("[data-stock-search]")?.focus();return}
     if(form.dataset.form==="stock-history-search"){clearTimeout(searchRenderTimer);stockHistorySearch=fd.query.trim();stockHistoryOpen=true;draw();app.querySelector("[data-stock-history-search]")?.focus();return}
-    if(form.dataset.form==="cash-history-search"){clearTimeout(searchRenderTimer);cashHistorySearch=fd.query.trim();cashHistoryOpen=true;draw();return}
+    if(form.dataset.form==="cash-history-search"){clearTimeout(searchRenderTimer);cashHistorySearch=fd.query.trim();cashHistoryOpen=true;draw();app.querySelector("[data-cash-history-search]")?.focus();return}
     if(form.dataset.form==="cart-note"){
       cart[fd.id]={...cart[fd.id],note:fd.note.trim()};saveCart();draw();if(fd.return_to_cart)mobileCartDialog();else closeModal();return;
     }
@@ -1222,6 +1225,7 @@ document.addEventListener("change",async event=>{
 document.addEventListener("input",event=>{
   if(event.target.matches("[data-stock-search]")){stockSearch=event.target.value;if(!event.isComposing)scheduleSearchRender("[data-stock-search]",draw)}
   if(event.target.matches("[data-stock-history-search]")){stockHistorySearch=event.target.value;stockHistoryOpen=true;if(!event.isComposing)scheduleSearchRender("[data-stock-history-search]",draw)}
+  if(event.target.matches("[data-cash-history-search]")){cashHistorySearch=event.target.value;cashHistoryOpen=true;if(!event.isComposing)scheduleSearchRender("[data-cash-history-search]",draw)}
   if(event.target.matches("[data-form='menu'] [name='component_quantity']"))updateMenuRecipeCosts(event.target.form);
   if(event.target.matches("[data-form='stock-purchase'] [name='quantity'],[data-form='stock-purchase'] [name='units_per_package'],[data-form='stock-purchase'] [name='unit_cost']"))updateStockPurchaseCalculation(event.target.form);
   if(event.target.matches("[data-form='stock-purchase-line'] [name='package_quantity'],[data-form='stock-purchase-line'] [name='units_per_package'],[data-form='stock-purchase-line'] [name='package_cost'],[data-form='stock-purchase-line'] [name='content_per_unit']"))updateBatchPurchaseLinePreview(event.target.form);
