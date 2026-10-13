@@ -276,3 +276,48 @@ dialog.quick-stock-dialog{width:min(1220px,calc(100% - 32px));max-width:none}
 .owner-pricing-option:has(input:checked){border-color:var(--gold);background:#2a281d}
 .owner-pricing-option:focus-within{outline:2px solid var(--gold);outline-offset:3px}
 @media(max-width:520px){.owner-pricing-option{gap:10px;padding:12px;margin:12px 0}}
+
+/* Comandas: nomes completos e leitura confortavel em qualquer tela. */
+.account-cards-simple:has(>.tab-card){grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr));align-items:stretch}
+.tab-card .account-card-simple{display:flex;flex-direction:column;align-items:flex-start;justify-content:space-between;gap:14px;padding:20px;min-height:126px}
+.tab-card .account-card-simple span{display:block;width:100%;min-width:0;font-size:17px;line-height:1.45;overflow-wrap:anywhere}
+.tab-card .account-card-simple b{font-size:21px;line-height:1.2}
+.tab-card:focus-within{border-color:var(--gold);box-shadow:0 0 0 2px #d8aa4926}
+dialog:has(.tab-account-statement){width:min(860px,calc(100% - 24px));max-height:calc(100dvh - 24px);overflow-y:auto}
+.tab-account-statement{clear:both;gap:22px;padding-top:8px}
+.tab-account-statement .account-statement-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px}
+.tab-account-statement .account-statement-head>div:first-child,.tab-order-head>div{min-width:0}
+.tab-account-statement .account-statement-head h2,.tab-order-head h2{font-size:clamp(22px,3vw,30px);line-height:1.25;overflow-wrap:anywhere}
+.tab-account-statement .account-statement-head .muted{margin-bottom:0;overflow-wrap:anywhere;line-height:1.5}
+.tab-account-statement .account-balance{padding:14px 18px;border:1px solid var(--line);border-radius:12px;background:#141510}
+.tab-account-statement .tab-statement-actions{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.tab-account-statement .tab-statement-actions button{padding:12px;white-space:normal;line-height:1.35}
+.tab-account-statement .account-statement-summary>div{min-width:0;padding:16px}
+.tab-account-statement .account-statement-summary b{overflow-wrap:anywhere}
+.tab-consumption-group>summary b,.tab-consumption-group>summary small,.tab-account-statement .ledger-entry>div,.hosted-event-order>div{min-width:0;overflow-wrap:anywhere}
+.tab-consumption-group>summary b{font-size:16px;line-height:1.4}
+.tab-account-statement .account-section-title{align-items:center;flex-wrap:wrap}
+.tab-order-head{clear:both;padding-top:8px}
+.tab-order-head>button{flex-shrink:0}
+.tab-order-layout>section,.tab-order-current,.tab-order-product,.tab-order-line>div{min-width:0}
+.tab-order-product b,.tab-order-line b{overflow-wrap:anywhere;line-height:1.4}
+.tab-order-dialog{max-height:calc(100dvh - 24px);overflow-y:auto}
+@media(max-width:600px){
+  dialog:has(.tab-account-statement),dialog.tab-order-dialog{padding:18px}
+  .tab-account-statement .account-statement-head{grid-template-columns:minmax(0,1fr);gap:14px}
+  .tab-account-statement .account-balance{text-align:left}
+  .tab-account-statement .account-statement-summary>div{padding:12px 10px}
+  .tab-account-statement .account-statement-summary b{font-size:16px}
+  .tab-order-head{flex-wrap:wrap;gap:10px;margin-bottom:16px}
+  .tab-order-head>div{flex:1 1 200px}
+  .tab-order-head h2{margin-bottom:0}
+  .tab-order-layout{gap:16px}
+  .tab-order-product{padding:12px}
+}
+@media(max-width:380px){
+  .tab-account-statement .tab-statement-actions{grid-template-columns:minmax(0,1fr)}
+  .tab-account-statement .account-statement-summary{grid-template-columns:minmax(0,1fr)}
+  .tab-account-statement .account-statement-summary>div{border-right:0;border-bottom:1px solid var(--line)}
+  .tab-account-statement .account-statement-summary>div:last-child{border-bottom:0}
+  .tab-order-products{grid-template-columns:minmax(0,1fr)}
+}
