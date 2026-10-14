@@ -119,6 +119,13 @@ async function claimStaffAccess(request, env) {
   const row = await env.DB.prepare("SELECT id,data FROM records WHERE kind='staff_access' AND json_extract(data,'$.token_hash')=? LIMIT 1").bind(tokenHash).first();
   if (!row) return reply({ error: "Este QR Code já foi utilizado ou não é válido." }, 401);
   const access = JSON.parse(row.data);
+  if (access.access_type === "shared_invite") {
+    const cash = await readRecord(env.DB, "cash", access.cash_session_id);
+    if (access.revoked_at || !cash || cash.status !== "open") return reply({ error: "O caixa deste QR Code já foi fechado." }, 401);
+    const deviceToken = `${uid()}${uid()}`;
+    await putRecord(env.DB, "staff_access", uid(), { access_type: "named_device", employee_name: "", cash_session_id: access.cash_session_id, token_hash: await sha256(deviceToken), created_at: now(), claimed_at: now() }).run();
+    return reply({ access_token: deviceToken, employee_name: "" });
+  }
   if (access.claimed_at || access.revoked_at || new Date(access.expires_at).getTime() < Date.now()) return reply({ error: "Este QR Code já foi utilizado ou expirou." }, 401);
   const cash = await readRecord(env.DB, "cash", access.cash_session_id);
   if (!cash || cash.status !== "open") return reply({ error: "O caixa deste QR Code já foi fechado." }, 401);
@@ -189,6 +196,12 @@ async function orderOrigin(db, token) {
   if (!row) throw new Error("Este acesso de funcionário não é válido.");
   const access = JSON.parse(row.data);
   if (access.revoked_at || new Date(access.expires_at).getTime() < Date.now()) throw new Error("O acesso deste funcionário expirou. Leia um novo QR Code.");
+  if (access.access_type === "shared_invite") throw new Error("Leia o QR Code para ativar este aparelho.");
+  if (access.access_type === "named_device") {
+    const cash = await readRecord(db, "cash", access.cash_session_id);
+    if (!cash || cash.status !== "open") throw new Error("O caixa deste acesso foi fechado. Leia um novo QR Code no próximo caixa.");
+    return { source_type: "staff", source_name: access.employee_name || "", cash_session_id: access.cash_session_id };
+  }
   const shift = await readRecord(db, "staff_shifts", access.shift_id);
   if (!shift || shift.status === "cancelled") throw new Error("O acesso deste funcionário foi revogado.");
   if (!access.cash_session_id) throw new Error("Este acesso pertence a um caixa anterior. Leia um novo QR Code.");
@@ -304,7 +317,7 @@ async function mutate(request, env) {
   const db = env.DB;
   const staffToken = request.headers.get("x-staff-access") || "";
   const device = await authorizedDevice(request, env);
-  const frontActions = new Set(["sale.checkout", "sale.order.void", "stock.event.create", "account.addItem", "account.create", "account.update", "account.receivePayment", "account.convertToCredit", "account.cancelItem", "kitchen.status"]);
+  const frontActions = new Set(["front.identify", "sale.checkout", "sale.order.void", "stock.event.create", "account.addItem", "account.create", "account.update", "account.receivePayment", "account.convertToCredit", "account.cancelItem", "kitchen.status"]);
   if (staffToken) {
     if (!frontActions.has(action)) return reply({ error: "Este QR Code permite acesso somente à Frente de Caixa." }, 403);
     await orderOrigin(db, staffToken);
@@ -314,8 +327,42 @@ async function mutate(request, env) {
     if (!allowed.has(action)) return reply({ error: `Este dispositivo possui acesso somente ${device.role === "front" ? "à Frente de Caixa" : "à Cozinha"}.` }, 403);
   } else if (!admin) return reply({ error: "Faça login para acessar o sistema." }, 401);
   if (adminActions.has(action) && !admin) return reply({ error: "Acesso administrativo necessário." }, 401);
-  // Keep audit attribution without asking the operator to type a name.
-  const operationOrigin = staffToken ? await orderOrigin(db, staffToken) : null;
+  if (action === "staff.access.shared") {
+    if (!admin) return reply({ error: "Acesso administrativo necessário." }, 403);
+    const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!open) throw new Error("Abra o caixa antes de gerar o QR Code da equipe.");
+    const accessId = `shared-${open.id}`, existing = await readRecord(db, "staff_access", accessId);
+    if (existing && !existing.revoked_at) return reply({ ok: true, access_token: existing.invite_token });
+    const rawToken = `${uid()}${uid()}`;
+    await putRecord(db, "staff_access", accessId, { access_type: "shared_invite", cash_session_id: open.id, invite_token: rawToken, token_hash: await sha256(rawToken), created_at: now() }).run();
+    return reply({ ok: true, access_token: rawToken });
+  }
+  const frontIdentityToken = request.headers.get("x-front-identity") || "";
+  if (action === "front.identify") {
+    const name = String(input.name || "").trim();
+    if (!name || name.length > 80) throw new Error("Informe seu nome, com até 80 caracteres.");
+    const existingToken = frontIdentityToken || staffToken;
+    if (existingToken) {
+      const origin = await orderOrigin(db, existingToken);
+      if (origin.source_name && origin.source_name !== name) throw new Error("O nome fica travado até o fechamento do caixa.");
+      if (!origin.source_name) {
+        const tokenHash = await sha256(existingToken);
+        await db.prepare("UPDATE records SET data=json_set(data,'$.employee_name',?,'$.identified_at',?) WHERE kind='staff_access' AND json_extract(data,'$.token_hash')=? AND json_extract(data,'$.employee_name')=''").bind(name, now(), tokenHash).run();
+        const confirmed = await orderOrigin(db, existingToken);
+        if (confirmed.source_name !== name) throw new Error("O nome fica travado até o fechamento do caixa.");
+      }
+      return reply({ ok: true, access_token: existingToken });
+    }
+    const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!open) throw new Error("Abra o caixa antes de confirmar seu nome.");
+    const rawToken = `${uid()}${uid()}`;
+    await putRecord(db, "staff_access", uid(), { access_type: "named_device", employee_name: name, cash_session_id: open.id, token_hash: await sha256(rawToken), created_at: now(), identified_at: now() }).run();
+    return reply({ ok: true, access_token: rawToken });
+  }
+  if (frontIdentityToken && frontActions.has(action)) input.origin_token = frontIdentityToken;
+  // Use the confirmed identity for audit attribution throughout the cash session.
+  const operationOrigin = input.origin_token ? await orderOrigin(db, input.origin_token) : null;
+  if (operationOrigin && !operationOrigin.source_name) throw new Error("Confirme seu nome na Frente de Caixa antes de lançar pedidos.");
   const automaticResponsible = operationOrigin?.source_name || device?.label || "Caixa principal";
   for (const field of ["responsible", "opened_by", "closed_by"]) {
     input[field] = typeof input[field] === "string" && input[field].trim() ? input[field].trim() : automaticResponsible;
@@ -1325,6 +1372,11 @@ export default {
         if (staffToken) await orderOrigin(env.DB, staffToken);
         else if (!admin && !device) return reply({ error: "Faça login para acessar o sistema." }, 401);
         const result = await state(env.DB);
+        const identityToken = request.headers.get("x-front-identity") || staffToken;
+        result.front_identity = null;
+        if (identityToken) {
+          try { result.front_identity = await orderOrigin(env.DB, identityToken); } catch { /* Closed identities are discarded by the client. */ }
+        }
         for (const access of Object.values(result.device_access || {})) {
           delete access.token_hash;
           delete access.claim_code_hash;
