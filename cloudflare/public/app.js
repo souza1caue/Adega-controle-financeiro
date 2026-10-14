@@ -914,6 +914,13 @@ cashPage=function(){
   return html+`<details class="dashboard-card cash-current-sales sales-history" ${cashHistoryOpen?'open':''}><summary class="cash-history-summary"><div><span class="eyebrow">Caixa aberto</span><h2>Histórico de movimentações</h2></div><span class="cash-history-count">${groupedHistory.groups.length} itens / movimentações <b class="cash-history-toggle" aria-hidden="true"></b></span></summary><div class="cash-history-body"><div class="cash-history-filters"><button class="${cashMovementFilter==='all'?'active':''}" data-cash-history-filter="all">Todos</button><button class="${cashMovementFilter==='sales'?'active':''}" data-cash-history-filter="sales">Vendas</button><button class="${cashMovementFilter==='accounts'?'active':''}" data-cash-history-filter="accounts">Fichas</button><button class="${cashMovementFilter==='cash'?'active':''}" data-cash-history-filter="cash">Suprimentos e sangrias</button></div>${rows?`<div class="sales-history-table-wrap"><table class="sales-history-table cash-movement-table"><thead><tr><th>Tipo</th><th>Descrição</th><th>Pagamento</th><th>Data e horário</th><th>Valor</th><th>Ação</th></tr></thead><tbody>${rows}</tbody></table></div>`:empty("Nenhuma movimentação encontrada neste filtro.")}<div class="pagination"><button data-history-page="${cashMovementPage-1}" ${cashMovementPage<=1?'disabled':''}>Anterior</button><span>Página ${cashMovementPage} de ${totalPages}</span><button data-history-page="${cashMovementPage+1}" ${cashMovementPage>=totalPages?'disabled':''}>Próxima</button></div></div></details>`;
 };
 
+function cashSummaryMetrics(id,cash){
+  const live=cashLive(id,cash),operating=dayOperatingCosts(id),productCost=live.sales.filter(([,sale])=>!sale.hosted_event_id).reduce((sum,[,sale])=>sum+saleActualCost(sale),0),otherCost=entries(data.stock_events).filter(([,event])=>event.cash_session_id===id&&!event.cancelled_at&&["loss","courtesy"].includes(event.event_type)).reduce((sum,[,event])=>sum+Number(event.total_cost||0),0),cost=productCost+operating.total+otherCost;
+  return{sales:live.salesTotal,cost,profit:live.salesTotal-cost,known:salesCostsAreKnown(live.sales)};
+}
+function cashSummaryCards(summary){
+  return `<article class="kpi-card"><span>Vendas</span><b>${money(summary.sales)}</b><small>Total vendido neste caixa</small></article><article class="kpi-card"><span>Custo</span><b>${summary.known?money(summary.cost):"Pendente"}</b><small>${summary.known?"Produtos e funcionamento do dia":"Cadastre os custos dos produtos"}</small></article><article class="kpi-card featured ${summary.known&&summary.profit<0?'cash-profit-negative':''}"><span>Lucro</span><b>${summary.known?money(summary.profit):"Pendente"}</b><small>${summary.known?"Vendas menos o custo total":"Aguardando os custos dos produtos"}</small></article>`;
+}
 function unifiedCashPage(){
   const shell=document.createElement("div");
   shell.innerHTML=cashPage();
@@ -922,10 +929,10 @@ function unifiedCashPage(){
   const title=shell.querySelector("h1");if(title)title.textContent="Caixa";
   const open=activeCash(),current=shell.querySelector(".cash-current");
   if(open&&current){
-    const live=cashLive(open[0],open[1]),head=current.querySelector(".cash-session-head"),actions=head?.querySelector(".actions");
+    const summary=cashSummaryMetrics(open[0],open[1]),head=current.querySelector(".cash-session-head"),actions=head?.querySelector(".actions");
     if(head){head.querySelector("h2").textContent=cashProject(open[1]);head.querySelector(".eyebrow").textContent="Caixa aberto"}
     const metrics=document.createElement("div");metrics.className="kpi-grid unified-cash-metrics";
-    metrics.innerHTML=`<article class="kpi-card featured"><span>Dinheiro em caixa</span><b>${money(live.expected)}</b><small>Valor esperado na gaveta</small></article><article class="kpi-card"><span>Recebimentos digitais</span><b>${money(live.payments.Digital||0)}</b><small>Recebidos neste caixa</small></article><article class="kpi-card"><span>Total recebido</span><b>${money(live.totalReceived)}</b><small>Vendas e fichas pagas</small></article>`;
+    metrics.innerHTML=cashSummaryCards(summary);
     const details=document.createElement("details");details.className="dashboard-card cash-financial-details";details.open=cashDetailsOpen;
     details.innerHTML='<summary><div><b>Detalhes do caixa</b><small>Vendas, custos, pendências e composição dos valores</small></div><span class="cash-history-toggle" aria-hidden="true"></span></summary><div class="cash-details-body"></div>';
     const body=details.querySelector(".cash-details-body");
