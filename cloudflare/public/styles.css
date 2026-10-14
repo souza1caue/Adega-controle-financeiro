@@ -292,6 +292,12 @@ dialog.quick-stock-dialog{width:min(1220px,calc(100% - 32px));max-width:none}
 .front-identity-entry button{min-height:46px}
 .staff-general-access{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px;flex-wrap:wrap}
 .staff-general-access h2{margin:0}
+.operating-day-picker{max-width:420px;margin:0 0 20px}.operating-day-picker label{display:grid;gap:7px;color:var(--muted);font-size:12px}
+.operating-cost-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:22px}.operating-cost-summary article{display:grid;align-content:start;gap:8px;padding:20px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}.operating-cost-summary .featured{border-color:var(--gold)}.operating-cost-summary span,.operating-cost-summary small{color:var(--muted);font-size:12px}.operating-cost-summary b{font-size:24px;overflow-wrap:anywhere}.operating-cost-summary .featured b{color:var(--gold)}
+.operating-cost-section{margin-bottom:16px}.operating-cost-section .dashboard-card-head{flex-wrap:wrap;gap:12px}.operating-cost-section .staff-consumption-row{margin-top:10px}
+.operating-cost-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:16px;padding:16px 0;border-top:1px solid var(--line)}.operating-cost-row>div:first-child{min-width:0;overflow-wrap:anywhere}.operating-cost-row small{display:block;color:var(--muted);margin-top:5px}.operating-cost-row>strong{color:var(--gold);white-space:nowrap}
+@media(max-width:850px){.operating-cost-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.operating-cost-row{grid-template-columns:minmax(0,1fr) auto}.operating-cost-row>.actions{grid-column:1/-1}}
+@media(max-width:420px){.operating-cost-summary{grid-template-columns:minmax(0,1fr)}.operating-cost-summary article{padding:16px}}
 @media(max-width:520px){.front-identity-entry form{flex-direction:column;align-items:stretch}.front-identity{padding:16px}.front-identity>label{flex-basis:100%}}
 .cash-history-item-group summary>div{min-width:0;overflow-wrap:anywhere}
 .cash-history-item-group summary .cash-history-units{white-space:normal;color:var(--text);font-weight:700;text-align:right}

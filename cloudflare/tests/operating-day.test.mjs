@@ -1,0 +1,87 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import { createHash } from 'node:crypto';
+import { fixture } from './fixture.mjs';
+
+test('staff cost needs no employee, edits one record, and does not create cash withdrawals or payment obligations', async () => {
+  const f = fixture();
+  let result = await f.call({ action: 'staff.cost.save', id: 'daily-cost', amount: 200 });
+  assert.equal(result.status, 200);
+  assert.equal(f.records('employees').length, 0);
+  assert.equal(f.records('staff_shifts')[0].employee_name, 'Funcionários');
+  assert.equal(f.records('staff_shifts')[0].cost_only, true);
+  result = await f.call({ action: 'staff.cost.save', id: 'daily-cost', amount: 250, description: 'Equipe do dia' });
+  assert.equal(result.status, 200);
+  assert.equal(f.records('staff_shifts').length, 1);
+  assert.equal(f.records('staff_shifts')[0].daily_rate, 250);
+  assert.equal((f.records('cash')[0].movements || []).length, 0);
+  assert.equal((await f.call({ action: 'cash.close', id: 'cash', counted_cash: 0, counted_account: 0 })).status, 200);
+  assert.equal((await f.call({ action: 'staff.shift.cancel', id: 'daily-cost' })).status, 400);
+  assert.equal((await f.call({ action: 'staff.cost.save', id: 'daily-cost', amount: 300 })).status, 400);
+});
+
+test('invalid, unauthorized, and historical cost edits do not change stored costs', async () => {
+  const f = fixture();
+  for (const amount of [0, -1, 'abc']) assert.equal((await f.call({ action: 'staff.cost.save', amount })).status, 400);
+  assert.equal((await f.call({ action: 'staff.cost.save', amount: 100 }, {})).status, 401);
+  f.put('device_access', 'front', { role: 'front', token_hash: createHash('sha256').update('front').digest('hex') });
+  assert.equal((await f.call({ action: 'staff.cost.save', amount: 100 }, { 'x-device-access': 'front' })).status, 403);
+  f.put('staff_shifts', 'legacy', { employee_name: 'João', group: 'Adega', daily_rate: 50, status: 'paid', cash_session_id: 'cash' });
+  assert.equal((await f.call({ action: 'staff.cost.save', id: 'legacy', amount: 100 })).status, 400);
+  assert.equal(f.records('staff_shifts')[0].daily_rate, 50);
+  await f.call({ action: 'staff.cost.save', id: 'new-cost', amount: 100 });
+  assert.equal((await f.call({ action: 'staff.shift.cancel', id: 'new-cost' })).status, 200);
+  assert.equal((await f.call({ action: 'staff.cost.save', id: 'new-cost', amount: 150 })).status, 400);
+});
+
+const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+function screen(data) {
+  const context = {
+    data, staffCashId: 'cash', entries: value => Object.entries(value || {}),
+    activeCash: () => ['cash', data.cash.cash],
+    hostedEventActualCost: (_, event) => event.actual_cost || 0,
+    esc: value => String(value).replaceAll('<', '&lt;'), money: value => `R$ ${value}`, date: value => value,
+    heading: (title, action) => `<h1>${title}</h1>${action}`, empty: value => value,
+  };
+  runInNewContext(source.slice(source.indexOf('function dayOperatingCosts('), source.indexOf('function stockHistoryEntry(')), context);
+  return context;
+}
+
+test('day total uses real consumption cost, includes legacy records, and counts event fees once', () => {
+  const context = screen({
+    cash: { cash: { status: 'open', opened_at: '2026-10-14' }, previous: { status: 'closed', opened_at: '2026-10-13' } },
+    staff_shifts: {
+      cost: { cash_session_id: 'cash', group: 'Funcionários', daily_rate: 200, cost_only: true },
+      legacy: { cash_session_id: 'cash', group: 'Cozinha', daily_rate: 50, status: 'paid' },
+      cancelled: { cash_session_id: 'cash', group: 'Adega', daily_rate: 999, status: 'cancelled' },
+      fee: { cash_session_id: 'cash', group: 'Evento', daily_rate: 300, hosted_event_id: 'event' },
+      old: { cash_session_id: 'previous', group: 'Adega', daily_rate: 999 },
+    },
+    stock_events: {
+      food: { cash_session_id: 'cash', event_type: 'staff_consumption', total_cost: 25, revenue_not_realized: 100 },
+      cancelled: { cash_session_id: 'cash', event_type: 'staff_consumption', total_cost: 999, cancelled_at: 'now' },
+      old: { cash_session_id: 'previous', event_type: 'staff_consumption', total_cost: 999 },
+    },
+    hosted_events: { event: { cash_session_id: 'cash', event_mode: 'contracted', fee_shift_id: 'fee', fee_amount: 300, actual_cost: 40 }, old: { cash_session_id: 'previous', actual_cost: 999 } },
+  });
+  const costs = context.dayOperatingCosts('cash');
+  assert.equal(costs.employeeCost, 250);
+  assert.equal(costs.consumptionCost, 25);
+  assert.equal(costs.eventCost, 340);
+  assert.equal(costs.total, 615);
+  const html = context.staffPageSimple();
+  assert.match(html, /Custo total de funcionamento/);
+  assert.match(html, /R\$ 615/);
+  assert.match(html, /data-new-staff-cost/);
+  assert.doesNotMatch(html, /data-new-employee|data-edit-employee|data-staff-add|data-new-staff-shift|staff-directory/);
+});
+
+test('unlinked event fee is included and historical screen disables new registrations', () => {
+  const context = screen({ cash: { cash: { status: 'closed', opened_at: '2026-10-13' } }, staff_shifts: {}, stock_events: {}, hosted_events: { event: { cash_session_id: 'cash', event_mode: 'contracted', fee_amount: 100, actual_cost: 15 } } });
+  context.activeCash = () => null;
+  assert.equal(context.dayOperatingCosts('cash').total, 115);
+  assert.match(context.staffPageSimple(), /data-new-staff-cost disabled/);
+  assert.match(context.staffPageSimple(), /data-staff-consumption disabled/);
+});

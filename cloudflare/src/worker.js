@@ -368,6 +368,18 @@ async function mutate(request, env) {
     input[field] = typeof input[field] === "string" && input[field].trim() ? input[field].trim() : automaticResponsible;
   }
   const id = input.id || uid();
+  if (action === "staff.cost.save") {
+    if (!admin) return reply({ error: "Acesso administrativo necessário." }, 403);
+    const open = await db.prepare("SELECT id,data FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!open) throw new Error("Abra o caixa antes de registrar o custo dos funcionários.");
+    const existing = await readRecord(db, "staff_shifts", id);
+    if (existing && (!existing.cost_only || existing.cash_session_id !== open.id || existing.status === "cancelled")) throw new Error("Este custo não pode ser alterado neste caixa.");
+    const cash = JSON.parse(open.data);
+    const cost = { ...(existing || {}), employee_id: "", employee_name: String(input.description || "").trim() || "Funcionários", group: "Funcionários", cost_only: true, cash_session_id: open.id, work_date: operationalDate(cash.opened_at), daily_rate: amount(input.amount, "o custo dos funcionários", false), status: "confirmed", note: "", created_at: existing?.created_at || now(), updated_at: now() };
+    if (cost.employee_name.length > 100) throw new Error("Use uma descrição com até 100 caracteres.");
+    await putRecord(db, "staff_shifts", id, cost).run();
+    return reply({ ok: true, id });
+  }
 
   let tapPayment = null;
   if (action.startsWith("tap.")) {
@@ -508,6 +520,10 @@ async function mutate(request, env) {
   } else if (action === "staff.shift.cancel") {
     const shift = await readRecord(db, "staff_shifts", id);
     if (!shift) throw new Error("Diária não encontrada.");
+    if (shift.cost_only) {
+      const cash = await readRecord(db, "cash", shift.cash_session_id);
+      if (!cash || cash.status !== "open") throw new Error("Este caixa já foi fechado. O custo registrado não pode ser excluído.");
+    }
     if (shift.status === "paid") throw new Error("Não é possível cancelar uma diária já paga.");
     shift.status = "cancelled"; shift.cancelled_at = now();
     const accessRows = await db.prepare("SELECT id,data FROM records WHERE kind='staff_access' AND json_extract(data,'$.shift_id')=? AND json_extract(data,'$.revoked_at') IS NULL").bind(id).all();
@@ -1274,7 +1290,7 @@ async function mutate(request, env) {
     const openTabs = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='accounts' AND json_extract(data,'$.account_type')='tab' AND json_extract(data,'$.cash_session_id')=? AND COALESCE(json_extract(data,'$.status'),'open')='open'").bind(id).first();
     const openTabCount = Number(openTabs?.total || 0);
     if (openTabCount) throw new Error(`Não é possível fechar o caixa: ${openTabCount} comanda${openTabCount === 1 ? " está" : "s estão"} aberta${openTabCount === 1 ? "" : "s"}. Quite ou transfira ${openTabCount === 1 ? "a comanda" : "as comandas"} para o fiado antes de continuar.`);
-    const staffPending = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='staff_shifts' AND json_extract(data,'$.cash_session_id')=? AND COALESCE(json_extract(data,'$.status'),'confirmed') NOT IN ('paid','cancelled')").bind(id).first();
+    const staffPending = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='staff_shifts' AND json_extract(data,'$.cash_session_id')=? AND COALESCE(json_extract(data,'$.cost_only'),0)!=1 AND COALESCE(json_extract(data,'$.status'),'confirmed') NOT IN ('paid','cancelled')").bind(id).first();
     const staffPendingCount = Number(staffPending?.total || 0);
     if (staffPendingCount) throw new Error(`Não é possível fechar o caixa: ${staffPendingCount} pagamento${staffPendingCount === 1 ? "" : "s"} da equipe ainda ${staffPendingCount === 1 ? "está" : "estão"} pendente${staffPendingCount === 1 ? "" : "s"}. Pague ou cancele ${staffPendingCount === 1 ? "a diária" : "as diárias"} antes de continuar.`);
     required(input.closed_by, "o responsável pelo fechamento");
