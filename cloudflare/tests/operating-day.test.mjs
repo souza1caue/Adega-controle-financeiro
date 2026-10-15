@@ -39,7 +39,7 @@ test('invalid, unauthorized, and historical cost edits do not change stored cost
 const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 function screen(data) {
   const context = {
-    data, staffCashId: 'cash', entries: value => Object.entries(value || {}),
+    data, staffCashId: 'cash', operatingEventId: '', entries: value => Object.entries(value || {}),
     activeCash: () => ['cash', data.cash.cash],
     hostedEventActualCost: (_, event) => event.actual_cost || 0,
     esc: value => String(value).replaceAll('<', '&lt;'), money: value => `R$ ${value}`, date: value => value,
@@ -193,6 +193,9 @@ test('operating page shows consumption totals and opens separate order popups', 
   assert.match(html, /R\$ 20/);
   assert.match(html, /R\$ 30/);
   assert.match(html, /name="fee_amount"/);
+  assert.equal((html.match(/data-form="simple-event"/g)||[]).length, 1);
+  assert.equal((html.match(/class="dashboard-card operating-main-block"/g)||[]).length, 2);
+  assert.doesNotMatch(html, /Adicionar evento|data-new-simple-event/);
   assert.match(html, /data-consumption-orders/);
   assert.doesNotMatch(html, /Staff food|Event food|staff-consumption-row/);
   let popup = '';
@@ -206,4 +209,18 @@ test('operating page shows consumption totals and opens separate order popups', 
   context.activeCash = () => null;
   context.consumptionOrdersDialog();
   assert.doesNotMatch(popup, /data-cancel-stock-event/);
+});
+
+
+test('empty event block saves one stable event for the cash and enables consumption after saving', async () => {
+  const f = fixture();
+  const context = screen({ cash: { cash: f.records('cash')[0] }, staff_shifts: {}, hosted_events: {}, stock_events: {} });
+  const html = context.staffPageSimple();
+  assert.match(html, /name="id" value="operating-cash"/);
+  assert.match(html, /data-event-consumption="operating-cash" disabled/);
+  for (const fee_amount of [100, 150]) assert.equal((await f.call({ action: 'operating.event.save', id: 'operating-cash', name: 'Evento do dia', fee_amount, consumption_mode: 'products' })).status, 200);
+  assert.equal(f.records('hosted_events').length, 1);
+  assert.equal(f.records('staff_shifts').length, 1);
+  context.data.hosted_events = { 'operating-cash': f.records('hosted_events')[0] };
+  assert.match(context.staffPageSimple(), /data-event-consumption="operating-cash" >/);
 });
