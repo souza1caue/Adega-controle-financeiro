@@ -399,3 +399,5 @@ dialog:has(.tab-account-statement){width:min(860px,calc(100% - 24px));max-height
 @media(max-width:360px){.tab-account-statement .tab-statement-actions{grid-template-columns:minmax(0,1fr)}.tab-order-products{grid-template-columns:minmax(0,1fr)}}
 
 .operating-staff-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:start}.operating-staff-layout>section{min-width:0}.operating-staff-layout .toolbar{flex-wrap:wrap}@media(max-width:800px){.operating-staff-layout{grid-template-columns:1fr}}
+
+.operating-consumption-total{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 0}.operating-consumption-total strong{font-size:24px;white-space:nowrap}.operating-event-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(100px,.65fr);gap:12px;align-items:end}.operating-event-form .field{min-width:0}.operating-event-form button{grid-column:1/-1}.operating-consumption-orders{max-height:60dvh;overflow:auto}.operating-cost-section>.operating-staff-layout{margin-bottom:16px}@media(max-width:420px){.operating-event-form{grid-template-columns:minmax(0,1fr)}}

@@ -163,3 +163,47 @@ test('staff selection adds, searches and removes items with zero stock', () => {
   context.changeStaffConsumption('food', -1);
   assert.equal(Object.keys(context.staffConsumptionCart).length, 0);
 });
+
+test('event fee saves separately from consumption, edits one cost and rejects invalid or historical changes', async () => {
+  const f = fixture();
+  const save = payload => f.call({ action: 'operating.event.save', id: 'music', name: 'Musica', consumption_mode: 'products', ...payload });
+  assert.equal((await save({ fee_amount: 300 })).status, 200);
+  const event = f.records('hosted_events')[0];
+  assert.equal(event.fee_amount, 300);
+  assert.equal(f.records('staff_shifts')[0].daily_rate, 300);
+  assert.equal((await save({ fee_amount: 350 })).status, 200);
+  assert.equal(f.records('staff_shifts').length, 1);
+  assert.equal(f.records('staff_shifts')[0].daily_rate, 350);
+  assert.equal((await save({ fee_amount: -1 })).status, 400);
+  assert.equal(f.records('staff_shifts')[0].daily_rate, 350);
+  const context = screen({ cash: { cash: f.records('cash')[0] }, staff_shifts: Object.fromEntries(f.records('staff_shifts').map(item => [item.id, item])), hosted_events: { music: f.records('hosted_events')[0] }, stock_events: { staff: { cash_session_id: 'cash', event_type: 'staff_consumption', total_cost: 20 }, event: { cash_session_id: 'cash', event_type: 'staff_consumption', hosted_event_id: 'music', total_cost: 30 } } });
+  assert.equal(context.dayOperatingCosts('cash').eventCost, 380);
+  assert.equal(context.dayOperatingCosts('cash').total, 400);
+  assert.equal((await f.call({ action: 'cash.close', id: 'cash', counted_cash: 0, counted_account: 0 })).status, 200);
+  assert.equal((await save({ fee_amount: 400 })).status, 400);
+});
+
+test('operating page shows consumption totals and opens separate order popups', () => {
+  const context = screen({ cash: { cash: { status: 'open', opened_at: 'today' } }, staff_shifts: {}, hosted_events: { music: { cash_session_id: 'cash', simple_event: true, name: 'Musica', fee_amount: 100, consumption_mode: 'products' } }, stock_events: {
+    staff: { cash_session_id: 'cash', event_type: 'staff_consumption', total_cost: 20, items: [{ description: 'Staff food', quantity: 1, cost: 20 }] },
+    event: { cash_session_id: 'cash', event_type: 'staff_consumption', hosted_event_id: 'music', total_cost: 30, items: [{ description: 'Event food', quantity: 1, cost: 30 }] },
+    cancelled: { cash_session_id: 'cash', event_type: 'staff_consumption', total_cost: 999, cancelled_at: 'now' },
+  } });
+  const html = context.staffPageSimple();
+  assert.match(html, /R\$ 20/);
+  assert.match(html, /R\$ 30/);
+  assert.match(html, /name="fee_amount"/);
+  assert.match(html, /data-consumption-orders/);
+  assert.doesNotMatch(html, /Staff food|Event food|staff-consumption-row/);
+  let popup = '';
+  context.openModal = value => { popup = value; };
+  context.consumptionOrdersDialog();
+  assert.match(popup, /Staff food/);
+  assert.doesNotMatch(popup, /Event food|999/);
+  context.consumptionOrdersDialog('music');
+  assert.match(popup, /Event food/);
+  assert.doesNotMatch(popup, /Staff food/);
+  context.activeCash = () => null;
+  context.consumptionOrdersDialog();
+  assert.doesNotMatch(popup, /data-cancel-stock-event/);
+});

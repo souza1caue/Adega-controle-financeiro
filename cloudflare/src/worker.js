@@ -390,7 +390,15 @@ async function mutate(request, env) {
     if (Number(products?.total) && input.consumption_mode !== "products") throw new Error("Este evento já tem produtos salvos. Mantenha a consumação por produtos.");
     const event = { ...(existing || {}), simple_event: true, name: String(input.name).trim(), cash_session_id: open.id, status: "open", consumption_mode: input.consumption_mode, fixed_consumption: input.consumption_mode === "fixed" ? amount(input.fixed_consumption, "o valor da consumação") : 0, created_at: existing?.created_at || now(), updated_at: now() };
     if (event.name.length > 100) throw new Error("Use um nome com até 100 caracteres.");
-    await putRecord(db, "hosted_events", id, event).run();
+    const feeAmount = amount(input.fee_amount ?? existing?.fee_amount ?? 0, "o valor do evento");
+    const feeShiftId = existing?.fee_shift_id || `event-fee-${id}`;
+    const feeShift = await readRecord(db, "staff_shifts", feeShiftId);
+    if (feeShift?.status === "paid" && Math.abs(Number(feeShift.daily_rate) - feeAmount) > .001) throw new Error("O evento já foi pago e não pode ter o valor alterado.");
+    event.event_mode = "contracted"; event.fee_amount = feeAmount; event.fee_shift_id = feeShiftId;
+    await db.batch([
+      putRecord(db, "hosted_events", id, event),
+      putRecord(db, "staff_shifts", feeShiftId, { ...(feeShift || {}), group: "Evento", cost_only: true, employee_name: event.name, daily_rate: feeAmount, cash_session_id: open.id, hosted_event_id: id, status: feeShift?.status || "confirmed", created_at: feeShift?.created_at || now(), updated_at: now() })
+    ]);
     return reply({ ok: true, id });
   }
   if (action === "staff.cost.save") {
