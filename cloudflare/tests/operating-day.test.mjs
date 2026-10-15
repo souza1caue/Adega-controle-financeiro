@@ -120,3 +120,42 @@ test('daily staff total replaces the displayed cost while preserving historical 
     assert.equal(f.records('staff_shifts').length, 2);
   }
 });
+
+test('staff consumption accepts zero balance and cancellation restores it', async () => {
+  const f = fixture();
+  f.put('menu', 'food', { name: 'Lanche', price: 20, category: 'Comidas' });
+  f.put('recipes', 'food', { components: [{ stock_item_id: 'beer', quantity: 1 }] });
+  const result = await f.call({ action: 'stock.event.create', event_type: 'staff_consumption', items: [{ menu_id: 'food', quantity: 2 }] });
+  assert.equal(result.status, 200);
+  assert.equal(f.balance('beer'), -2);
+  assert.equal(f.records('stock_movements')[0].type, 'staff_consumption');
+  assert.equal(f.records('kitchen')[0].items[0].quantity, 2);
+  assert.equal(f.records('sales').length, 0);
+  assert.equal((await f.call({ action: 'stock.event.cancel', id: result.id, reason: 'Teste' })).status, 200);
+  assert.equal(f.balance('beer'), 0);
+});
+
+test('staff selection adds, searches and removes items with zero stock', () => {
+  let html = '';
+  const context = {
+    data: { menu: { food: { name: 'Lanche', category: 'Comidas' } }, recipes: { food: { components: [{ stock_item_id: 'ingredient', quantity: 1 }] } }, stock_items: { ingredient: { cost_price: 3 } } },
+    staffConsumptionCart: {}, staffConsumptionSearch: '', staffConsumptionSubmitting: false, staffConsumptionEventId: '',
+    productStockState: () => ({ available: 0, tracked: true }),
+    saleStockBlocked: state => Boolean(state.invalid), saleStockLabel: () => 'Sem saldo',
+    entries: Object.entries, esc: String, money: value => `R$ ${value}`, saleGroup: () => 'Comidas', empty: String,
+    modal: { classList: { add() {} } }, openModal: value => { html = value; }, toast: () => assert.fail('Unexpected stock block'),
+  };
+  runInNewContext(source.slice(source.indexOf('function menuCost('), source.indexOf('function tabOrderDialog(')), context);
+  context.renderStaffConsumptionDialog();
+  assert.match(html, /data-staff-consumption-add="food"/);
+  assert.doesNotMatch(html, /data-staff-consumption-add="food" disabled/);
+  context.changeStaffConsumption('food', 1);
+  assert.equal(context.staffConsumptionCart.food.quantity, 1);
+  assert.equal(context.staffConsumptionTotal(), 3);
+  context.staffConsumptionSearch = 'lan';
+  context.renderStaffConsumptionDialog();
+  assert.match(html, /data-staff-consumption-add="food"/);
+  assert.equal(context.staffConsumptionCart.food.quantity, 1);
+  context.changeStaffConsumption('food', -1);
+  assert.equal(Object.keys(context.staffConsumptionCart).length, 0);
+});

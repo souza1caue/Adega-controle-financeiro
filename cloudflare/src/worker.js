@@ -254,7 +254,7 @@ function atomicStockChange(db, stockItemId, product, type, quantityValue, detail
   const signed = ["sale", "loss", "out", "courtesy", "staff_consumption"].includes(type) ? -movementQuantity : movementQuantity;
   const movementId = uid();
   // Entries/returns may leave a negative balance. Other withdrawals remain guarded.
-  const allowNegative = signed >= 0 || (type === "sale" && ALLOW_SALES_WITHOUT_STOCK);
+  const allowNegative = signed >= 0 || (["sale", "staff_consumption"].includes(type) && ALLOW_SALES_WITHOUT_STOCK);
   const update = db.prepare(`UPDATE stock_balances SET quantity=CASE
     WHEN ? OR quantity+? >= 0 THEN quantity+? ELSE NULL END,
     updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(allowNegative ? 1 : 0, signed, signed, stockItemId);
@@ -1031,7 +1031,7 @@ async function mutate(request, env) {
     for (const [stockItemId, requiredQuantity] of requirements) {
       const stockItem = await readRecord(db, "stock_items", stockItemId), balance = await db.prepare("SELECT quantity FROM stock_balances WHERE id=?").bind(stockItemId).first();
       if (!stockItem) throw new Error("Um insumo da ficha técnica não existe mais.");
-      if (Number(balance?.quantity || 0) + .000001 < requiredQuantity) throw new Error(`Estoque insuficiente de ${stockItem.name}. Disponível: ${Number(balance?.quantity || 0)} ${stockItem.unit || "un"}.`);
+      if (!(input.event_type === "staff_consumption" && ALLOW_SALES_WITHOUT_STOCK) && Number(balance?.quantity || 0) + .000001 < requiredQuantity) throw new Error(`Estoque insuficiente de ${stockItem.name}. Disponível: ${Number(balance?.quantity || 0)} ${stockItem.unit || "un"}.`);
       statements.push(...atomicStockChange(db, stockItemId, stockItem, movementType, requiredQuantity, { reason: reason ? `${label}: ${reason}` : label, responsible, reference_id: eventId }));
     }
     const event = { event_type: input.event_type, responsible, reason: reason || label, beneficiary, items: eventItems, items_count: eventItems.length, units_count: eventItems.reduce((sum, item) => sum + item.quantity, 0), total_cost: Math.round(eventItems.reduce((sum, item) => sum + item.cost, 0) * 100) / 100, revenue_not_realized: Math.round(eventItems.reduce((sum, item) => sum + item.quantity * item.sale_price, 0) * 100) / 100, cash_session_id: origin.cash_session_id || open.id, created_at: createdAt, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" };
