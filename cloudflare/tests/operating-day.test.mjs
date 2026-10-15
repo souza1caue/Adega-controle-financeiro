@@ -74,7 +74,7 @@ test('day total uses real consumption cost, includes legacy records, and counts 
   const html = context.staffPageSimple();
   assert.match(html, /Custo total de funcionamento/);
   assert.match(html, /R\$ 615/);
-  assert.match(html, /data-new-staff-cost/);
+  assert.match(html, /data-form="staff-cost-total"/);
   assert.doesNotMatch(html, /data-new-employee|data-edit-employee|data-staff-add|data-new-staff-shift|staff-directory/);
 });
 
@@ -82,6 +82,41 @@ test('unlinked event fee is included and historical screen disables new registra
   const context = screen({ cash: { cash: { status: 'closed', opened_at: '2026-10-13' } }, staff_shifts: {}, stock_events: {}, hosted_events: { event: { cash_session_id: 'cash', event_mode: 'contracted', fee_amount: 100, actual_cost: 15 } } });
   context.activeCash = () => null;
   assert.equal(context.dayOperatingCosts('cash').total, 115);
-  assert.match(context.staffPageSimple(), /data-new-staff-cost disabled/);
+  assert.match(context.staffPageSimple(), /name="amount"[^>]+disabled/);
   assert.match(context.staffPageSimple(), /data-staff-consumption disabled/);
+});
+
+test('staff and event consumption send only food to kitchen and cancellation restores stock', async () => {
+  for (const event of [false, true]) {
+    const f = fixture();
+    f.sqlite.exec("UPDATE stock_balances SET quantity=10 WHERE id='beer'");
+    f.put('menu', 'food', { name: 'Lanche', price: 20, category: 'Comidas' });
+    f.put('recipes', 'food', { components: [{ stock_item_id: 'beer', quantity: 1 }] });
+    if (event) f.put('hosted_events', 'party', { simple_event: true, name: 'Festa', cash_session_id: 'cash', status: 'open', consumption_mode: 'products' });
+    const result = await f.call({ action: 'stock.event.create', event_type: 'staff_consumption', hosted_event_id: event ? 'party' : '', items: [{ menu_id: 'food', quantity: 2 }, { menu_id: 'beer', quantity: 1 }] });
+    assert.equal(result.status, 200);
+    assert.equal(f.balance('beer'), 7);
+    assert.equal(f.records('sales').length, 0);
+    const order = f.records('kitchen')[0];
+    assert.equal(order.status, 'pending');
+    assert.equal(order.items.length, 1);
+    assert.equal(order.items[0].menu_id, 'food');
+    assert.equal(order.quantity, 2);
+    assert.equal(order.stock_event_id, result.id);
+    assert.equal(order.hosted_event_id, event ? 'party' : '');
+    assert.equal((await f.call({ action: 'cash.close', id: 'cash', counted_cash: 0, counted_account: 0 })).status, 400);
+    assert.equal((await f.call({ action: 'stock.event.cancel', id: result.id, reason: 'Pedido errado' })).status, 200);
+    assert.equal(f.balance('beer'), 10);
+    assert.equal(f.records('kitchen')[0].status, 'cancelled');
+  }
+});
+
+test('daily staff total replaces the displayed cost while preserving historical shifts', async () => {
+  const f = fixture();
+  f.put('staff_shifts', 'legacy', { group: 'Adega', daily_rate: 100, cash_session_id: 'cash', status: 'paid' });
+  for (const amount of [250, 80, 0]) {
+    assert.equal((await f.call({ action: 'staff.cost.total', amount })).status, 200);
+    assert.equal(f.records('staff_shifts').reduce((sum, item) => sum + item.daily_rate, 0), amount);
+    assert.equal(f.records('staff_shifts').length, 2);
+  }
 });

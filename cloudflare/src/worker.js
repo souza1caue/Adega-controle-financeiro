@@ -368,6 +368,31 @@ async function mutate(request, env) {
     input[field] = typeof input[field] === "string" && input[field].trim() ? input[field].trim() : automaticResponsible;
   }
   const id = input.id || uid();
+  if (action === "staff.cost.total") {
+    if (!admin) return reply({ error: "Acesso administrativo necessário." }, 403);
+    const open = await db.prepare("SELECT id,data FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!open) throw new Error("Abra o caixa antes de informar o custo dos funcionários.");
+    const total = amount(input.amount, "o custo dos funcionários"), costId = `staff-total-${open.id}`;
+    const rows = await db.prepare("SELECT id,data FROM records WHERE kind='staff_shifts' AND json_extract(data,'$.cash_session_id')=?").bind(open.id).all();
+    const previousCost = rows.results.filter(row => row.id !== costId).map(row => JSON.parse(row.data)).filter(item => item.group !== "Evento" && item.status !== "cancelled").reduce((sum,item) => sum + Number(item.daily_rate || 0),0);
+    await putRecord(db, "staff_shifts", costId, { employee_name: "Custo total dos funcionários", group: "Funcionários", cost_only: true, total_adjustment: true, daily_rate: Math.round((total - previousCost) * 100) / 100, status: "confirmed", cash_session_id: open.id, updated_at: now() }).run();
+    return reply({ ok: true, id: costId });
+  }
+  if (action === "operating.event.save") {
+    if (!admin) return reply({ error: "Acesso administrativo necessário." }, 403);
+    const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!open) throw new Error("Abra o caixa antes de registrar o evento.");
+    required(input.name, "o nome do evento");
+    if (!["fixed", "products"].includes(input.consumption_mode)) throw new Error("Escolha como registrar a consumação.");
+    const existing = await readRecord(db, "hosted_events", id);
+    if (existing && (!existing.simple_event || existing.cash_session_id !== open.id || existing.status === "closed")) throw new Error("Este evento não pode ser alterado neste caixa.");
+    const products = await db.prepare("SELECT COUNT(*) total FROM records WHERE kind='stock_events' AND json_extract(data,'$.hosted_event_id')=? AND json_extract(data,'$.cancelled_at') IS NULL").bind(id).first();
+    if (Number(products?.total) && input.consumption_mode !== "products") throw new Error("Este evento já tem produtos salvos. Mantenha a consumação por produtos.");
+    const event = { ...(existing || {}), simple_event: true, name: String(input.name).trim(), cash_session_id: open.id, status: "open", consumption_mode: input.consumption_mode, fixed_consumption: input.consumption_mode === "fixed" ? amount(input.fixed_consumption, "o valor da consumação") : 0, created_at: existing?.created_at || now(), updated_at: now() };
+    if (event.name.length > 100) throw new Error("Use um nome com até 100 caracteres.");
+    await putRecord(db, "hosted_events", id, event).run();
+    return reply({ ok: true, id });
+  }
   if (action === "staff.cost.save") {
     if (!admin) return reply({ error: "Acesso administrativo necessário." }, 403);
     const open = await db.prepare("SELECT id,data FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
@@ -985,10 +1010,16 @@ async function mutate(request, env) {
     if (withoutRecipe.length) throw new Error(`Configure a baixa de estoque antes de registrar: ${withoutRecipe.map((item) => item.description).join(", ")}.`);
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
     if (!open) throw new Error("Abra o caixa antes de registrar uma perda ou cortesia.");
+    let consumptionEvent = null;
+    if (input.hosted_event_id) {
+      if (!admin || input.event_type !== "staff_consumption") throw new Error("Acesso administrativo necessário para a consumação do evento.");
+      consumptionEvent = await readRecord(db, "hosted_events", input.hosted_event_id);
+      if (!consumptionEvent?.simple_event || consumptionEvent.cash_session_id !== open.id || consumptionEvent.status !== "open" || consumptionEvent.consumption_mode !== "products") throw new Error("Este evento não permite adicionar produtos neste caixa.");
+    }
     let beneficiary = (input.beneficiary || "").trim(), responsible = (input.responsible || "").trim();
     if (input.event_type === "staff_consumption") {
       const origin = await orderOrigin(db, input.origin_token);
-      beneficiary = "Equipe do caixa"; responsible = origin.source_name;
+      beneficiary = consumptionEvent?.name || "Equipe do caixa"; responsible = origin.source_name;
     } else required(responsible, "o responsável");
     const origin = await orderOrigin(db, input.origin_token), createdAt = now(), eventId = id, requirements = new Map(), eventItems = [];
     for (const item of items) {
@@ -1004,6 +1035,14 @@ async function mutate(request, env) {
       statements.push(...atomicStockChange(db, stockItemId, stockItem, movementType, requiredQuantity, { reason: reason ? `${label}: ${reason}` : label, responsible, reference_id: eventId }));
     }
     const event = { event_type: input.event_type, responsible, reason: reason || label, beneficiary, items: eventItems, items_count: eventItems.length, units_count: eventItems.reduce((sum, item) => sum + item.quantity, 0), total_cost: Math.round(eventItems.reduce((sum, item) => sum + item.cost, 0) * 100) / 100, revenue_not_realized: Math.round(eventItems.reduce((sum, item) => sum + item.quantity * item.sale_price, 0) * 100) / 100, cash_session_id: origin.cash_session_id || open.id, created_at: createdAt, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" };
+    if (consumptionEvent) event.hosted_event_id = input.hosted_event_id;
+    if (input.event_type === "staff_consumption") {
+      const foodItems = items.filter(item => item.category === "Comidas");
+      if (foodItems.length) {
+        event.kitchen_order_id = eventId;
+        statements.push(putRecord(db, "kitchen", eventId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: beneficiary, origin: consumptionEvent ? "Consumação de evento" : "Consumação dos funcionários", stock_event_id: eventId, hosted_event_id: input.hosted_event_id || "", cash_session_id: open.id, note: reason, created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type }));
+      }
+    }
     statements.push(putRecord(db, "stock_events", eventId, event));
     await db.batch(statements);
     return reply({ ok: true, id: eventId, total_cost: event.total_cost });
@@ -1012,6 +1051,13 @@ async function mutate(request, env) {
     const event = await readRecord(db, "stock_events", id);
     if (!event || event.cancelled_at) throw new Error("Ocorrência não encontrada ou já cancelada.");
     const statements = [];
+    if (event.kitchen_order_id) {
+      const kitchen = await readRecord(db, "kitchen", event.kitchen_order_id);
+      if (kitchen && !["delivered", "done"].includes(kitchen.status)) {
+        kitchen.status = "cancelled"; kitchen.cancelled_at = now(); kitchen.cancelled_by = input.responsible.trim(); kitchen.cancel_reason = input.reason.trim();
+        statements.push(putRecord(db, "kitchen", event.kitchen_order_id, kitchen));
+      }
+    }
     for (const item of event.items || []) for (const usage of item.stock_usage || []) {
       const stockItem = await readRecord(db, "stock_items", usage.stock_item_id);
       if (stockItem) statements.push(...atomicStockChange(db, usage.stock_item_id, stockItem, "return", usage.quantity, { reason: `Cancelamento de ${event.event_type === "loss" ? "perda" : event.event_type === "staff_consumption" ? "consumação de funcionário" : "cortesia"}: ${input.reason.trim()}`, responsible: input.responsible.trim(), reference_id: id }));
@@ -1060,7 +1106,6 @@ async function mutate(request, env) {
     const hostedEvent = await readRecord(db, "hosted_events", id);
     if (!hostedEvent || hostedEvent.status === "closed") throw new Error("Evento não encontrado ou já encerrado.");
     required(input.responsible, "o responsável pela confirmação");
-    if (input.confirmed !== true) throw new Error("Confirme a conferência da comanda e do custo do evento.");
     const closedAt = now(), statements = [];
     hostedEvent.status = "closed"; hostedEvent.closed_at = closedAt; hostedEvent.closed_by = input.responsible.trim(); hostedEvent.cost_applied_at = closedAt; hostedEvent.cost_applied_amount = Number(hostedEvent.actual_cost || 0);
     statements.push(putRecord(db, "hosted_events", id, hostedEvent));
@@ -1284,15 +1329,9 @@ async function mutate(request, env) {
     const kitchenOpen = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='kitchen' AND COALESCE(json_extract(data,'$.status'),'pending') NOT IN ('delivered','done','cancelled')").first();
     const kitchenOpenCount = Number(kitchenOpen?.total || 0);
     if (kitchenOpenCount) throw new Error(`Não é possível fechar o caixa: ${kitchenOpenCount} pedido${kitchenOpenCount === 1 ? "" : "s"} ainda ${kitchenOpenCount === 1 ? "está" : "estão"} em andamento na cozinha.`);
-    const pendingEvents = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='hosted_events' AND json_extract(data,'$.cash_session_id')=? AND (COALESCE(json_extract(data,'$.status'),'open')!='closed' OR json_extract(data,'$.cost_applied_at') IS NULL)").bind(id).first();
-    const pendingEventCount = Number(pendingEvents?.total || 0);
-    if (pendingEventCount) throw new Error(`Não é possível fechar o caixa: ${pendingEventCount} comanda${pendingEventCount === 1 ? " de evento precisa" : "s de evento precisam"} ser confirmada${pendingEventCount === 1 ? "" : "s"} e ter o custo aplicado.`);
-    const openTabs = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='accounts' AND json_extract(data,'$.account_type')='tab' AND json_extract(data,'$.cash_session_id')=? AND COALESCE(json_extract(data,'$.status'),'open')='open'").bind(id).first();
+    const openTabs = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='accounts' AND json_extract(data,'$.account_type')='tab' AND json_extract(data,'$.cash_session_id')=? AND COALESCE(json_extract(data,'$.status'),'open')='open' AND json_extract(data,'$.hosted_event_id') IS NULL").bind(id).first();
     const openTabCount = Number(openTabs?.total || 0);
     if (openTabCount) throw new Error(`Não é possível fechar o caixa: ${openTabCount} comanda${openTabCount === 1 ? " está" : "s estão"} aberta${openTabCount === 1 ? "" : "s"}. Quite ou transfira ${openTabCount === 1 ? "a comanda" : "as comandas"} para o fiado antes de continuar.`);
-    const staffPending = await db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='staff_shifts' AND json_extract(data,'$.cash_session_id')=? AND COALESCE(json_extract(data,'$.cost_only'),0)!=1 AND COALESCE(json_extract(data,'$.status'),'confirmed') NOT IN ('paid','cancelled')").bind(id).first();
-    const staffPendingCount = Number(staffPending?.total || 0);
-    if (staffPendingCount) throw new Error(`Não é possível fechar o caixa: ${staffPendingCount} pagamento${staffPendingCount === 1 ? "" : "s"} da equipe ainda ${staffPendingCount === 1 ? "está" : "estão"} pendente${staffPendingCount === 1 ? "" : "s"}. Pague ou cancele ${staffPendingCount === 1 ? "a diária" : "as diárias"} antes de continuar.`);
     required(input.closed_by, "o responsável pelo fechamento");
     const sales = await db.prepare("SELECT data FROM records WHERE kind='sales' AND json_extract(data,'$.cash_session_id')=?").bind(id).all();
     const parsed = sales.results.map((row) => JSON.parse(row.data)).filter((sale) => !sale.voided_at);
@@ -1328,6 +1367,17 @@ async function mutate(request, env) {
     cash.items = [...grouped.values()].sort((a, b) => a.description.localeCompare(b.description));
     const accessRows = await db.prepare("SELECT id,data FROM records WHERE kind='staff_access' AND json_extract(data,'$.cash_session_id')=? AND json_extract(data,'$.revoked_at') IS NULL").bind(id).all();
     const statements = [putRecord(db, "cash", id, cash)];
+    const closingEvents = await db.prepare("SELECT id,data FROM records WHERE kind='hosted_events' AND json_extract(data,'$.cash_session_id')=?").bind(id).all();
+    for (const row of closingEvents.results) {
+      const event = JSON.parse(row.data);
+      event.status = "closed"; event.closed_at ||= now(); event.cost_applied_at ||= now();
+      statements.push(putRecord(db, "hosted_events", row.id, event));
+      if (event.account_id) {
+        const account = await readRecord(db, "accounts", event.account_id);
+        if (account) { account.status = "closed"; account.closed_at ||= now(); statements.push(putRecord(db, "accounts", event.account_id, account)); }
+      }
+    }
+
     for (const row of accessRows.results) {
       const access = JSON.parse(row.data);
       access.revoked_at = now();

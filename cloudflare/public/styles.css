@@ -397,3 +397,5 @@ dialog:has(.tab-account-statement){width:min(860px,calc(100% - 24px));max-height
   .front-app .mobile-checkout{bottom:calc(68px + env(safe-area-inset-bottom))}
 }
 @media(max-width:360px){.tab-account-statement .tab-statement-actions{grid-template-columns:minmax(0,1fr)}.tab-order-products{grid-template-columns:minmax(0,1fr)}}
+
+.operating-staff-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:start}.operating-staff-layout>section{min-width:0}.operating-staff-layout .toolbar{flex-wrap:wrap}@media(max-width:800px){.operating-staff-layout{grid-template-columns:1fr}}
