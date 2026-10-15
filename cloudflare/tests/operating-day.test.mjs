@@ -125,11 +125,13 @@ test('staff consumption accepts zero balance and cancellation restores it', asyn
   const f = fixture();
   f.put('menu', 'food', { name: 'Lanche', price: 20, category: 'Comidas' });
   f.put('recipes', 'food', { components: [{ stock_item_id: 'beer', quantity: 1 }] });
-  const result = await f.call({ action: 'stock.event.create', event_type: 'staff_consumption', items: [{ menu_id: 'food', quantity: 2 }] });
+  const result = await f.call({ action: 'stock.event.create', event_type: 'staff_consumption', reason: 'Sem cebola, molho separado', items: [{ menu_id: 'food', quantity: 2 }] });
   assert.equal(result.status, 200);
   assert.equal(f.balance('beer'), -2);
   assert.equal(f.records('stock_movements')[0].type, 'staff_consumption');
   assert.equal(f.records('kitchen')[0].items[0].quantity, 2);
+  assert.equal(f.records('kitchen')[0].note, 'Sem cebola, molho separado');
+  assert.equal(f.records('stock_events')[0].reason, 'Sem cebola, molho separado');
   assert.equal(f.records('sales').length, 0);
   assert.equal((await f.call({ action: 'stock.event.cancel', id: result.id, reason: 'Teste' })).status, 200);
   assert.equal(f.balance('beer'), 0);
@@ -139,7 +141,7 @@ test('staff selection adds, searches and removes items with zero stock', () => {
   let html = '';
   const context = {
     data: { menu: { food: { name: 'Lanche', category: 'Comidas' } }, recipes: { food: { components: [{ stock_item_id: 'ingredient', quantity: 1 }] } }, stock_items: { ingredient: { cost_price: 3 } } },
-    staffConsumptionCart: {}, staffConsumptionSearch: '', staffConsumptionSubmitting: false, staffConsumptionEventId: '',
+    staffConsumptionCart: {}, staffConsumptionSearch: '', staffConsumptionSubmitting: false, staffConsumptionEventId: '', staffConsumptionNote: 'Sem cebola',
     productStockState: () => ({ available: 0, tracked: true }),
     saleStockBlocked: state => Boolean(state.invalid), saleStockLabel: () => 'Sem saldo',
     entries: Object.entries, esc: String, money: value => `R$ ${value}`, saleGroup: () => 'Comidas', empty: String,
@@ -152,6 +154,8 @@ test('staff selection adds, searches and removes items with zero stock', () => {
   context.changeStaffConsumption('food', 1);
   assert.equal(context.staffConsumptionCart.food.quantity, 1);
   assert.equal(context.staffConsumptionTotal(), 3);
+  assert.match(html, /data-staff-consumption-note/);
+  assert.match(html, /Sem cebola<\/textarea>/);
   context.staffConsumptionSearch = 'lan';
   context.renderStaffConsumptionDialog();
   assert.match(html, /data-staff-consumption-add="food"/);
