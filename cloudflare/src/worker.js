@@ -12,7 +12,7 @@ function receivedPaymentMethod(value) {
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 // Operational flag, also exposed to the UI through /api/state.
 const ALLOW_SALES_WITHOUT_STOCK = true;
-const KINDS = ["menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_movements", "stock_items", "recipes", "inventories", "employees", "staff_shifts", "device_access", "stock_events", "hosted_events"];
+const KINDS = ["settings", "menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_movements", "stock_items", "recipes", "inventories", "employees", "staff_shifts", "device_access", "stock_events", "hosted_events"];
 
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 const now = () => new Date().toISOString();
@@ -34,6 +34,13 @@ function putRecord(db, kind, id, data) {
   return db.prepare(`INSERT INTO records(kind,id,data,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP)
     ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data,updated_at=CURRENT_TIMESTAMP`)
     .bind(kind, id, JSON.stringify(data));
+}
+
+async function menuCostSnapshot(db, menuId, usage, multiplier = 1) {
+  const setting = await readRecord(db, "settings", "menu_cost");
+  const item = await readRecord(db, "menu", menuId);
+  const fixed = setting?.mode === "fixed";
+  return { cost_mode: fixed ? "fixed" : "stock", unit_cost: fixed ? Number(item?.fixed_cost_price || 0) : usage.length ? usage.reduce((sum, part) => sum + Number(part.quantity || 0) * Number(part.unit_cost || 0), 0) / multiplier : Number(item?.cost_price || 0) };
 }
 
 async function state(db) {
@@ -295,6 +302,7 @@ async function cartItems(db, inputItems) {
     const menuItem = await readRecord(db, "menu", inputItem.menu_id);
     if (!menuItem) throw new Error("Um item do pedido não está mais disponível no cardápio.");
     const recipe = await readRecord(db, "recipes", inputItem.menu_id);
+    const usage = await recipeUsage(db, inputItem.menu_id);
     result.push({
       menu_id: inputItem.menu_id,
       description: menuItem.name,
@@ -303,7 +311,8 @@ async function cartItems(db, inputItems) {
       category: isFood(menuItem) ? "Comidas" : "Bebidas",
       note: (inputItem.note || "").trim(),
       menu_item: menuItem,
-      stock_usage: await recipeUsage(db, inputItem.menu_id),
+      stock_usage: usage,
+      ...await menuCostSnapshot(db, inputItem.menu_id, usage),
     });
   }
   return result;
@@ -312,7 +321,7 @@ async function cartItems(db, inputItems) {
 async function mutate(request, env) {
   let input = await request.json();
   let action = input.action;
-  const adminActions = new Set(["menu.save", "menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "stock.purchase.batch", "stock.quick.create", "stock.invoice.import", "stock.event.cancel", "hosted.event.save", "hosted.event.close", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "event.save", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
+  const adminActions = new Set(["menu.cost.mode", "menu.save", "menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "stock.purchase.batch", "stock.quick.create", "stock.invoice.import", "stock.event.cancel", "hosted.event.save", "hosted.event.close", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "event.save", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
   const admin = await isAdmin(request, env);
   const db = env.DB;
   const staffToken = request.headers.get("x-staff-access") || "";
@@ -475,6 +484,9 @@ async function mutate(request, env) {
     if (!access) throw new Error("Dispositivo não encontrado.");
     access.revoked_at = now();
     await putRecord(db, "device_access", id, access).run();
+  } else if (action === "menu.cost.mode") {
+    if (!["stock", "fixed"].includes(input.mode)) throw new Error("Modo de custo inválido.");
+    await putRecord(db, "settings", "menu_cost", { mode: input.mode, updated_at: now() }).run();
   } else if (action === "menu.save") {
     required(input.name, "o nome do item");
     const price = Number(input.price);
@@ -482,6 +494,7 @@ async function mutate(request, env) {
     const existing = input.id ? await readRecord(db, "menu", id) : null;
     if (input.id && !existing) throw new Error("Produto do cardápio não encontrado.");
     const item = { ...(existing || {}), name: input.name.trim(), price, category: input.category === "Comidas" ? "Comidas" : "Bebidas" };
+    if (input.fixed_cost_price != null) item.fixed_cost_price = amount(input.fixed_cost_price, "o custo fixo");
     item[existing ? "updated_at" : "created_at"] = now();
     const components = Array.isArray(input.components) ? input.components : [];
     const componentTotals = new Map();
@@ -872,19 +885,18 @@ async function mutate(request, env) {
     const orderId = uid();
     const origin = await orderOrigin(db, input.origin_token);
     const entry = { id: uid(), menu_id: input.menu_id || "", description: input.description.trim(), quantity: quantity(input.quantity), price: amount(input.price, "o preço"), note: (input.note || "").trim(), created_at: createdAt, order_id: orderId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "", stock_usage: [] };
-    if (entry.menu_id) entry.stock_usage = await recipeUsage(db, entry.menu_id, entry.quantity);
+    if (entry.menu_id) { entry.stock_usage = await recipeUsage(db, entry.menu_id, entry.quantity); Object.assign(entry, await menuCostSnapshot(db, entry.menu_id, entry.stock_usage, entry.quantity)); }
     if (account.account_type === "tab" && account.owner_pricing && !entry.menu_id) throw new Error("Selecione um produto com custo cadastrado para a comanda de proprietário.");
     if ((account.account_type === "owner" || (account.account_type === "tab" && account.owner_pricing)) && entry.menu_id) {
-      const menuItem = await readRecord(db, "menu", entry.menu_id);
-      if (account.owner_pricing && entry.stock_usage.some(usage => !(Number(usage.unit_cost) > 0))) throw new Error(`Configure o custo de todos os insumos de ${entry.description} antes de lançar na comanda de proprietário.`);
-      const totalCost = entry.stock_usage.length ? entry.stock_usage.reduce((sum, usage) => sum + Number(usage.quantity || 0) * Number(usage.unit_cost || 0), 0) : Number(menuItem?.cost_price || 0) * entry.quantity;
+      if (account.owner_pricing && entry.cost_mode !== "fixed" && entry.stock_usage.some(usage => !(Number(usage.unit_cost) > 0))) throw new Error(`Configure o custo de todos os insumos de ${entry.description} antes de lançar na comanda de proprietário.`);
+      const totalCost = Number(entry.unit_cost || 0) * entry.quantity;
       if (totalCost <= 0) throw new Error(`Configure o custo ou os insumos de ${entry.description} antes de lançar na ficha de proprietário.`);
       entry.price = Math.round(totalCost / entry.quantity * 100) / 100;
     }
     account.items = [...(account.items || []), entry];
     const statements = [
       putRecord(db, "accounts", id, account),
-      putRecord(db, "sales", uid(), { menu_id: entry.menu_id, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, customer_name: account.customer_name, payment_method: "Caderneta", account_id: id, account_item_id: entry.id, order_id: orderId, created_at: createdAt, ...origin }),
+      putRecord(db, "sales", uid(), { menu_id: entry.menu_id, cost_mode: entry.cost_mode, unit_cost: entry.unit_cost, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, customer_name: account.customer_name, payment_method: "Caderneta", account_id: id, account_item_id: entry.id, order_id: orderId, created_at: createdAt, ...origin }),
     ];
     if (entry.stock_usage.length) {
       for (const usage of entry.stock_usage) {
@@ -1033,7 +1045,7 @@ async function mutate(request, env) {
     for (const item of items) {
       const usage = item.stock_usage.map((component) => ({ ...component, quantity: Math.round(Number(component.quantity) * item.quantity * 10000) / 10000 }));
       for (const component of usage) requirements.set(component.stock_item_id, (requirements.get(component.stock_item_id) || 0) + component.quantity);
-      eventItems.push({ menu_id: item.menu_id, description: item.description, quantity: item.quantity, sale_price: item.price, stock_usage: usage, cost: Math.round(usage.reduce((sum, component) => sum + component.quantity * Number(component.unit_cost || 0), 0) * 100) / 100 });
+      eventItems.push({ menu_id: item.menu_id, description: item.description, quantity: item.quantity, sale_price: item.price, stock_usage: usage, cost: Math.round(item.unit_cost * item.quantity * 100) / 100 });
     }
     const statements = [], movementType = input.event_type === "loss" ? "loss" : input.event_type === "staff_consumption" ? "staff_consumption" : "courtesy", label = input.event_type === "loss" ? "Perda" : input.event_type === "staff_consumption" ? "Consumação de funcionário" : "Cortesia", reason = (input.reason || "").trim();
     for (const [stockItemId, requiredQuantity] of requirements) {
@@ -1157,11 +1169,11 @@ async function mutate(request, env) {
       const orderCustomerName = String(account.customer_name || customerName).trim();
       required(orderCustomerName, "o nome do cliente da comanda");
       const ownerPricing = account.account_type === "owner" || (account.account_type === "tab" && account.owner_pricing === true);
-      if (account.owner_pricing && items.some(item => item.stock_usage.some(usage => !(Number(usage.unit_cost) > 0)))) throw new Error("Configure o custo de todos os insumos antes de lançar na comanda de proprietário.");
-      const accountEntries = items.map((item) => { const ownerCost = item.stock_usage.length ? item.stock_usage.reduce((sum, usage) => sum + Number(usage.quantity || 0) * Number(usage.unit_cost || 0), 0) : Number(item.menu_item?.cost_price || 0); if (ownerPricing && ownerCost <= 0) throw new Error(`Configure o custo ou os insumos de ${item.description} antes de lançar na ficha de proprietário.`); return { id: uid(), menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: ownerPricing ? Math.round(ownerCost * 100) / 100 : item.price, note: item.note, created_at: createdAt, order_id: orderId, cash_session_id: cashSessionId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }; });
+      if (account.owner_pricing && items.some(item => item.cost_mode !== "fixed" && item.stock_usage.some(usage => !(Number(usage.unit_cost) > 0)))) throw new Error("Configure o custo de todos os insumos antes de lançar na comanda de proprietário.");
+      const accountEntries = items.map((item) => { const ownerCost = item.unit_cost; if (ownerPricing && ownerCost <= 0) throw new Error(`Configure o custo ou os insumos de ${item.description} antes de lançar na ficha de proprietário.`); return { id: uid(), menu_id: item.menu_id, cost_mode: item.cost_mode, unit_cost: item.unit_cost, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: ownerPricing ? Math.round(ownerCost * 100) / 100 : item.price, note: item.note, created_at: createdAt, order_id: orderId, cash_session_id: cashSessionId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }; });
       account.items = [...(account.items || []), ...accountEntries];
       statements.push(putRecord(db, "accounts", accountId, account));
-      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, item_category: entry.item_category, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: orderCustomerName, payment_method: account.account_type === "tab" ? "Comanda" : "Caderneta", account_id: accountId, account_type: account.account_type || "customer", account_item_id: entry.id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
+      for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, cost_mode: entry.cost_mode, unit_cost: entry.unit_cost, item_category: entry.item_category, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: orderCustomerName, payment_method: account.account_type === "tab" ? "Comanda" : "Caderneta", account_id: accountId, account_type: account.account_type || "customer", account_item_id: entry.id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: orderCustomerName, account_id: accountId, account_type: account.account_type || "customer", cash_session_id: cashSessionId, note, origin: account.account_type === "tab" ? "Comanda" : "Fiado", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
     } else if (input.destination === "event") {
       required(input.event_id, "o evento");
@@ -1179,8 +1191,8 @@ async function mutate(request, env) {
         paymentMethod = receivedPaymentMethod(paymentMethod);
       }
       const revenueRatio = orderTotal > 0 ? overage / orderTotal : 0;
-      const actualCost = items.reduce((sum, item) => sum + (item.stock_usage.length ? item.stock_usage.reduce((itemCost, usage) => itemCost + Number(usage.quantity || 0) * item.quantity * Number(usage.unit_cost || 0), 0) : Number(item.menu_item.cost_price || 0) * item.quantity), 0);
-      for (const item of items) statements.push(putRecord(db, "sales", uid(), { menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price * revenueRatio, menu_price: item.price, event_consumption_amount: item.quantity * item.price * (1 - revenueRatio), item_note: item.note, note, customer_name: hostedEvent.name, payment_method: paymentMethod, card_type: "", hosted_event_id: input.event_id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
+      const actualCost = items.reduce((sum, item) => sum + item.unit_cost * item.quantity, 0);
+      for (const item of items) statements.push(putRecord(db, "sales", uid(), { menu_id: item.menu_id, cost_mode: item.cost_mode, unit_cost: item.unit_cost, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price * revenueRatio, menu_price: item.price, event_consumption_amount: item.quantity * item.price * (1 - revenueRatio), item_note: item.note, note, customer_name: hostedEvent.name, payment_method: paymentMethod, card_type: "", hosted_event_id: input.event_id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
       hostedEvent.used_amount = Number(hostedEvent.used_amount || 0) + covered;
       hostedEvent.actual_cost = Number(hostedEvent.actual_cost || 0) + actualCost;
       hostedEvent.orders = [...(hostedEvent.orders || []), { id: orderId, items: items.map(item => ({ menu_id: item.menu_id, description: item.description, quantity: item.quantity, unit_price: item.price, note: item.note })), order_total: orderTotal, covered_amount: covered, overage_amount: overage, actual_cost: actualCost, payment_method: paymentMethod, created_at: createdAt, created_by: origin.source_name }];
@@ -1189,7 +1201,7 @@ async function mutate(request, env) {
         if (input.account_id && input.account_id !== hostedEvent.account_id) throw new Error("A comanda não pertence a este evento.");
         const eventAccount = await readRecord(db, "accounts", hostedEvent.account_id);
         if (!eventAccount || eventAccount.status === "closed") throw new Error("A comanda de consumação está fechada.");
-        const eventEntries = items.map(item => ({ id: uid(), menu_id: item.menu_id, item_category: item.category, description: item.description, quantity: item.quantity, price: item.price, cost: item.stock_usage.length ? item.stock_usage.reduce((sum,usage)=>sum+Number(usage.quantity||0)*Number(usage.unit_cost||0),0) : Number(item.menu_item.cost_price||0), note: item.note, created_at: createdAt, order_id: orderId, cash_session_id: cashSessionId, created_by: origin.source_name }));
+        const eventEntries = items.map(item => ({ id: uid(), menu_id: item.menu_id, cost_mode: item.cost_mode, unit_cost: item.unit_cost, item_category: item.category, description: item.description, quantity: item.quantity, price: item.price, cost: item.unit_cost, note: item.note, created_at: createdAt, order_id: orderId, cash_session_id: cashSessionId, created_by: origin.source_name }));
         eventAccount.items = [...(eventAccount.items || []), ...eventEntries]; eventAccount.updated_at = createdAt;
         statements.push(putRecord(db, "accounts", hostedEvent.account_id, eventAccount));
       }
@@ -1201,7 +1213,7 @@ async function mutate(request, env) {
       if (shouldPrint) required(customerName, "o nome do cliente para enviar o pedido à cozinha");
       for (const item of items) {
         const saleId = uid();
-        statements.push(putRecord(db, "sales", saleId, { menu_id: item.menu_id, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, payment_method: paymentMethod, card_type: "", cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
+        statements.push(putRecord(db, "sales", saleId, { menu_id: item.menu_id, cost_mode: item.cost_mode, unit_cost: item.unit_cost, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: item.price, item_note: item.note, note, customer_name: customerName, payment_method: paymentMethod, card_type: "", cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
       }
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: customerName, note, origin: "Venda", payment_method: paymentMethod, card_type: "", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
     }
@@ -1456,7 +1468,7 @@ export default {
           delete access.claim_code_hash;
         }
         if (!admin) {
-          const allowed = device?.role === "kitchen" ? new Set(["kitchen"]) : new Set(["menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_items", "recipes", "stock_events", "hosted_events"]);
+          const allowed = device?.role === "kitchen" ? new Set(["kitchen"]) : new Set(["settings", "menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_items", "recipes", "stock_events", "hosted_events"]);
           for (const kind of KINDS) if (!allowed.has(kind)) result[kind] = {};
         }
         return reply(result);
