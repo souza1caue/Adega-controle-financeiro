@@ -508,8 +508,8 @@ async function mutate(request, env) {
     }
     const normalized = [...componentTotals].map(([stock_item_id, component]) => ({ stock_item_id, quantity: Math.round(component.quantity * 10000) / 10000, input_quantity: component.input_quantity, input_unit: component.input_unit }));
     const statements = [putRecord(db, "menu", id, item)];
-    if (normalized.length) statements.push(putRecord(db, "recipes", id, { menu_id: id, product_name: item.name, components: normalized, updated_at: now() }));
-    else statements.push(db.prepare("DELETE FROM records WHERE kind='recipes' AND id=?").bind(id));
+    if (Array.isArray(input.components) && normalized.length) statements.push(putRecord(db, "recipes", id, { menu_id: id, product_name: item.name, components: normalized, updated_at: now() }));
+    else if (Array.isArray(input.components)) statements.push(db.prepare("DELETE FROM records WHERE kind='recipes' AND id=?").bind(id));
     await db.batch(statements);
   } else if (action === "menu.create" || action === "menu.update") {
     required(input.name, "o nome do item");
