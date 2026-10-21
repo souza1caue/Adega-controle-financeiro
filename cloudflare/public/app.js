@@ -178,7 +178,7 @@ const syncVersions=new Map(), historyLoads=new Map(), historyPages=new Map();
 const syncUsage={started:Date.now(),requests:0,rows:0,measured:false};
 const authIdentity=()=>JSON.stringify([token,deviceToken,originToken]);
 function syncHeaders(){return {...(frontIdentityToken?{"x-front-identity":frontIdentityToken}:{}),...(originToken?{"x-staff-access":originToken}:{}),...(deviceToken?{"x-device-access":deviceToken}:{}),...(token?{authorization:`Bearer ${token}`}:{})}}
-function startRefresh(render){return setInterval(()=>{if(!document.hidden&&!loadPending)load(render).catch(error=>showSyncError(error))},refreshDelay(module,page))}
+function startRefresh(render){return setInterval(()=>{if(!document.hidden&&!loadPending&&(typeof liveSync==="undefined"||liveSync.shouldPoll()))load(render).catch(error=>showSyncError(error))},refreshDelay(module,page))}
 function showSyncError(error){if(/exceeded.*(daily|free tier)|daily.*limit|1027/i.test(error.message||""))error=new Error("O limite de uso do Cloudflare foi atingido. Aguarde a renova\u00e7\u00e3o da cota ou confira o plano no painel Cloudflare.");const box=document.querySelector("#syncStatus");if(box){box.hidden=false;box.textContent=error.message||"Falha ao atualizar. Tentaremos novamente."}}
 async function load(render=true){
   const task=(loadPending||Promise.resolve()).catch(()=>{}).then(()=>loadState(render));
@@ -224,6 +224,8 @@ async function loadState(render=true){
     if(render)toast("O caixa foi fechado. O acesso deste aparelho foi encerrado.",true);
   }
   if(incoming.sync?.more)return loadState(render);
+  if(typeof liveSync!=="undefined"){liveSync.synced();liveSync.ensure()}
+  if(typeof acknowledgeKitchen!=="undefined")acknowledgeKitchen();
   if(render&&changed){
     const choosingOverviewDate=page==="summary"&&document.activeElement?.matches?.(".overview-custom-range input[type='date']");
     if(!choosingOverviewDate)draw();
@@ -239,9 +241,13 @@ async function claimInvite(){
 }
 async function mutate(payload, admin=false){
   if(module==="Frente de caixa"&&payload.action!=="front.identify"&&!data.front_identity?.source_name)throw new Error("Confirme seu nome antes de continuar.");
+  const checkout=payload.action==="sale.checkout",scope=authIdentity(),original=payload;
+  if(checkout)payload=checkoutRetry.begin(scope,original);
   const response=await fetch("/api/mutate",{method:"POST",headers:{"content-type":"application/json",...(module==="Frente de caixa"&&frontIdentityToken?{"x-front-identity":frontIdentityToken}:{}),...(token?{authorization:`Bearer ${token}`}:{}) ,...(deviceToken?{"x-device-access":deviceToken}:{}),...(originToken?{"x-staff-access":originToken}:{})},body:JSON.stringify(payload)});
   const result=await response.json();if(response.status===401&&(token||deviceToken)){token="";deviceToken="";deviceRole="";localStorage.removeItem("adminToken");sessionStorage.removeItem("adminToken");localStorage.removeItem("deviceAccessToken");localStorage.removeItem("deviceRole");module=null;page=null;draw();throw new Error("Sua autorização expirou. Entre novamente.")}if(!response.ok){if(originToken&&/acesso|caixa.*fechado|revog/i.test(result.error||"")){originToken="";localStorage.removeItem("staffAccessToken");history.replaceState({},"",location.pathname);module=null;page=null;draw()}throw new Error(result.error||"Operação não concluída.");}
-  await load(false); toast("Alteração salva."); return result;
+  if(checkout)checkoutRetry.complete(scope,original);
+  try{await load(false);toast("Alteração salva.")}catch(error){showSyncError(error);toast("Pedido salvo. Aguardando atualização da tela.",true)}
+  return result;
 }
 function toast(message,error=false){const box=document.querySelector("#toast");box.textContent=fiadoLabels(message);box.className=error?"show error":"show";setTimeout(()=>box.className="",2800)}
 function openModal(html){modal.classList.remove("quick-stock-dialog");modalBody.innerHTML=`<div class="modal-content">${fiadoLabels(String(html).replace(/Cadernetas/g,"Fiado").replace(/cadernetas/g,"fiado").replace(/Caderneta/g,"Fiado").replace(/caderneta/g,"fiado"))}</div>`;if(!modal.open)modal.showModal()}
@@ -271,6 +277,7 @@ function sharedStaffAccessDialog(accessToken){
   openModal(`<h2>QR Code da equipe</h2><p>Todos os funcionários podem usar este mesmo QR Code. Cada um digita o próprio nome no seu aparelho.</p><img class="staff-qr" src="${qr}" alt="QR Code geral da equipe"><label class="field">Link de acesso<input value="${esc(url)}" readonly></label><p class="muted">O acesso e os nomes confirmados valem até o fechamento deste caixa.</p>`);
 }
 function draw(){
+  liveSync.ensure();
   const frontNameInput=document.activeElement?.matches?.("[data-front-name]")?document.activeElement:null;
   const frontNameDraft=frontNameInput?{value:frontNameInput.value,start:frontNameInput.selectionStart,end:frontNameInput.selectionEnd}:null;
   const stockSearchInput=page==="stock"&&document.activeElement?.matches?.("[data-stock-search]")?document.activeElement:null;
@@ -405,7 +412,7 @@ function cancelAccountItemDialog(id,itemId,index){const a=data.accounts[id],item
 function kitchenRows(statuses,controls=true){const list=entries(data.kitchen).filter(([,o])=>statuses.includes(o.status||"pending")).sort((a,b)=>(a[1].created_at||"").localeCompare(b[1].created_at||""));return list.map(([id,o])=>{const items=orderItems(o),itemList=items.map(item=>`<div class="kitchen-order-item"><b>${Number(item.quantity)}x ${esc(item.description)}</b>${item.note?`<p class="kitchen-order-note"><span>OBSERVA&Ccedil;&Atilde;O</span>${esc(item.note)}</p>`:""}</div>`).join("");const status=o.status||"pending";return`<div class="row kitchen-order-card"><div><div class="kitchen-order-items">${itemList||`<div class="kitchen-order-item"><b>${esc(o.description)}</b></div>`}</div>${o.note?`<p class="kitchen-order-note general"><span>OBSERVA&Ccedil;&Atilde;O GERAL</span>${esc(o.note)}</p>`:""}<div class="kitchen-order-meta">${esc(o.customer_name||"Sem cliente")} · ${esc(o.origin||"Balcão")}</div></div><span class="status ${status}">${statusName[status]}</span><span>${date(o.created_at)}</span>${controls?`<div class="actions">${status==="pending"?`<button data-kitchen="${id}" data-status="started">Iniciar</button>`:""}${status==="started"?`<button class="primary" data-kitchen="${id}" data-status="ready">Finalizar</button>`:""}${status==="ready"?`<button class="primary" data-kitchen="${id}" data-status="delivered">Confirmar entrega</button>`:""}</div>`:""}</div>`}).join("")||empty("Nenhum pedido nesta etapa.")}
 function kitchenPage(){const fullscreen=Boolean(document.fullscreenElement),actions=`<div class="kitchen-heading-actions">${notificationAction("kitchen")}<button class="${fullscreen?'nav-active':''}" data-kitchen-fullscreen>${fullscreen?'Sair da tela cheia':'Tela cheia'}</button></div>`;return heading("Cozinha",actions)+`<div class="kitchen-alert-hint"><b>Alertas de novos pedidos</b><span>Mantenha esta tela aberta e clique em “Ativar alertas da cozinha” uma vez neste computador.</span></div><div class="kitchen-board"><section class="kitchen-column pending"><header><span class="eyebrow">Aguardando</span><h2>Pendentes</h2></header><div class="list">${kitchenRows(["pending"])}</div></section><section class="kitchen-column started"><header><span class="eyebrow">Produção</span><h2>Em preparo</h2></header><div class="list">${kitchenRows(["started"])}</div></section><section class="kitchen-column ready"><header><span class="eyebrow">Finalizado</span><h2>Prontos</h2><small>Aguardando retirada</small></header><div class="list">${kitchenRows(["ready"],false)}</div></section></div><details class="kitchen-history" ${kitchenHistoryOpen?'open':''}><summary>Histórico de entregas</summary><div class="list">${kitchenRows(["delivered","done"],false)}</div></details>`}
 function orderWait(order){const created=new Date(order.created_at).getTime();return Number.isFinite(created)?Math.max(0,Math.floor((Date.now()-created)/60000)):0}
-function frontKitchenCard(id,order){const status=order.status||"pending",delivered=["delivered","done"].includes(status),wait=orderWait(order),urgency=delivered?"normal":wait>=30?"late":wait>=15?"warning":"normal",items=orderItems(order),count=items.reduce((sum,item)=>sum+Number(item.quantity||0),0),content=`<div class="front-order-items">${items.map(item=>`<div><b>${Number(item.quantity)}x ${esc(item.description)}</b>${item.note?`<small>${esc(item.note)}</small>`:""}</div>`).join("")}${order.note?`<p class="front-order-note">${esc(order.note)}</p>`:""}</div>`,audit=`<small class="order-audit">Pedido por: ${esc(order.created_by||"Caixa principal")}${order.delivered_by?` · Entregue por: ${esc(order.delivered_by)}`:""}</small>`,timing=delivered?`Entregue às ${time(order.delivered_at)}`:`${wait} min`;return`<article class="front-order-card ${urgency}"><div class="front-order-head"><div><span class="eyebrow">#${esc(id.slice(0,6).toUpperCase())} · ${count} ${count===1?'item':'itens'}</span><h3>${esc(order.customer_name||"Cliente não informado")}</h3></div><div><span class="status ${status}">${statusName[status]}</span><b>${timing}</b></div></div>${audit}${content}${status==="ready"?`<button class="primary front-deliver" data-kitchen="${id}" data-status="delivered">Confirmar entrega</button>`:""}</article>`}
+function frontKitchenCard(id,order){const status=order.status||"pending",delivered=["delivered","done"].includes(status),wait=orderWait(order),urgency=delivered?"normal":wait>=30?"late":wait>=15?"warning":"normal",items=orderItems(order),count=items.reduce((sum,item)=>sum+Number(item.quantity||0),0),content=`<div class="front-order-items">${items.map(item=>`<div><b>${Number(item.quantity)}x ${esc(item.description)}</b>${item.note?`<small>${esc(item.note)}</small>`:""}</div>`).join("")}${order.note?`<p class="front-order-note">${esc(order.note)}</p>`:""}</div>`,audit=`<small class="order-audit">Pedido por: ${esc(order.created_by||"Caixa principal")}${order.delivered_by?` · Entregue por: ${esc(order.delivered_by)}`:""}</small>`,timing=delivered?`Entregue às ${time(order.delivered_at)}`:`${wait} min`;return`<article class="front-order-card ${urgency}"><div class="front-order-head"><div><span class="eyebrow">#${esc(id.slice(0,6).toUpperCase())} · ${count} ${count===1?'item':'itens'}</span><h3>${esc(order.customer_name||"Cliente não informado")}</h3></div><div><span class="status ${status}">${statusName[status]}</span><b>${timing}</b></div></div>${audit}${kitchenReceipt(order)}${content}${status==="ready"?`<button class="primary front-deliver" data-kitchen="${id}" data-status="delivered">Confirmar entrega</button>`:""}</article>`}
 function frontKitchenPage(){const today=new Date().toISOString().slice(0,10),active=entries(data.kitchen).filter(([,o])=>!["delivered","done"].includes(o.status||"pending")).sort((a,b)=>(a[1].created_at||"").localeCompare(b[1].created_at||"")),ready=active.filter(([,o])=>(o.status||"pending")==="ready"),preparing=active.filter(([,o])=>["pending","started"].includes(o.status||"pending")),shown=frontKitchenFilter==="preparing"?preparing:ready,history=entries(data.kitchen).filter(([,o])=>["delivered","done"].includes(o.status)&&String(o.delivered_at||o.created_at||"").slice(0,10)===today).sort((a,b)=>(b[1].delivered_at||b[1].created_at||"").localeCompare(a[1].delivered_at||a[1].created_at||"")).slice(0,10);return heading("Pedidos da cozinha")+`<div class="front-kitchen-summary"><button type="button" data-front-kitchen-filter="ready" class="${frontKitchenFilter==="ready"&&"active"}" aria-pressed="${frontKitchenFilter==="ready"}"><span>Prontos</span><b>${ready.length}</b></button><button type="button" data-front-kitchen-filter="preparing" class="${frontKitchenFilter==="preparing"&&"active"}" aria-pressed="${frontKitchenFilter==="preparing"}"><span>Em preparo</span><b>${preparing.length}</b></button></div><div class="front-order-list">${shown.map(([id,o])=>frontKitchenCard(id,o)).join("")||empty(frontKitchenFilter==="ready"?"Nenhum pedido pronto para entrega.":"Nenhum pedido nesta etapa.")}</div><details class="front-kitchen-history" ${frontKitchenHistoryOpen?'open':''}><summary>Histórico de entregas de hoje</summary><div class="list">${history.map(([id,o])=>frontKitchenCard(id,o)).join("")||empty("Nenhuma entrega registrada hoje.")}</div></details>`}
 function printOrders(status){return entries(data.kitchen).filter(([,o])=>o.print_status===status).sort((a,b)=>(a[1].created_at||"").localeCompare(b[1].created_at||""))}
 function orderItems(o){if(Array.isArray(o.items)&&o.items.length){const foods=o.items.filter(item=>item.category==="Comidas");return foods.length?foods:o.items.filter(item=>!item.category)}return[{description:o.description,quantity:o.quantity,price:o.price}]}
@@ -1288,7 +1295,7 @@ document.addEventListener("submit",async event=>{
       }
 
       if(checkoutSubmitting)return;checkoutSubmitting=true;const submit=form.querySelector("button[type='submit']"),total=checkoutChargedTotal(form),quantity=cartQuantity(),hasFood=cartLines().some(([id])=>category(data.menu[id])==="Comidas"),paymentLabel=systemLabel(fd.payment_method);submit.disabled=true;submit.textContent="Finalizando...";
-      try{const newOwner=fd.account_id==="__new_owner",frontTab=fd.destination==="account"&&module==="Frente de caixa",result=await mutate({action:"sale.checkout",items:cartLines().map(([menu_id,line])=>({menu_id,quantity:line.quantity,note:line.note||""})),customer_name:fd.destination==="account"?fd.customer_name:fd.sale_customer_name,payment_method:fd.payment_method,destination:frontTab?"tab":fd.destination,account_id:newOwner?"":fd.account_id,account_type:frontTab?"tab":newOwner?"owner":"customer",owner_pricing:frontTab&&fd.owner_pricing==="true",event_id:fd.event_id,origin_token:originToken});cart={};saveCart();draw();modalBody.innerHTML=`<div class="modal-content order-success"><span class="success-icon">✓</span><h2>Pedido confirmado</h2><b class="order-number">#${esc(result.id.slice(0,8).toUpperCase())}</b><div class="success-summary"><div><span>Itens</span><b>${quantity}</b></div><div><span>Total</span><b>${money(total)}</b></div><div><span>Destino</span><b>${fd.destination==="account"?(frontTab?'Comanda':'Fiado'):fd.destination==="event"?'Consumação de evento':esc(paymentLabel)}</b></div></div>${hasFood?`<p class="notice">Comanda enviada para a fila de impressão da cozinha.</p>`:""}<button class="primary checkout-button" data-new-order>Novo pedido</button></div>`;return}finally{checkoutSubmitting=false;if(form.isConnected){submit.disabled=false;updateCheckoutKind(form)}}
+      try{const newOwner=fd.account_id==="__new_owner",frontTab=fd.destination==="account"&&module==="Frente de caixa",result=await mutate({action:"sale.checkout",items:cartLines().map(([menu_id,line])=>({menu_id,quantity:line.quantity,note:line.note||""})),customer_name:fd.destination==="account"?fd.customer_name:fd.sale_customer_name,payment_method:fd.payment_method,destination:frontTab?"tab":fd.destination,account_id:newOwner?"":fd.account_id,account_type:frontTab?"tab":newOwner?"owner":"customer",owner_pricing:frontTab&&fd.owner_pricing==="true",event_id:fd.event_id,origin_token:originToken});cart={};saveCart();draw();modalBody.innerHTML=`<div class="modal-content order-success"><span class="success-icon">✓</span><h2>Pedido confirmado</h2><b class="order-number">#${esc(result.id.slice(0,8).toUpperCase())}</b><div class="success-summary"><div><span>Itens</span><b>${quantity}</b></div><div><span>Total</span><b>${money(total)}</b></div><div><span>Destino</span><b>${fd.destination==="account"?(frontTab?'Comanda':'Fiado'):fd.destination==="event"?'Consumação de evento':esc(paymentLabel)}</b></div></div>${hasFood?`<p class="notice">Pedido salvo e enviado para a cozinha. Acompanhe o recebimento em Pedidos.</p>`:""}<button class="primary checkout-button" data-new-order>Novo pedido</button></div>`;return}finally{checkoutSubmitting=false;if(form.isConnected){submit.disabled=false;updateCheckoutKind(form)}}
     }
     closeModal();draw();
   }catch(error){toast(error.message,true)}
@@ -1356,6 +1363,30 @@ document.addEventListener("toggle",event=>{
 document.addEventListener("fullscreenchange",()=>{if(kitchenViewOpen())draw()});
 import { createStockEntry } from "./stock-entry.js";
 import { mergeState, mergeRecords, refreshDelay } from "./data-sync.js?v=incremental-20261020";
+import { createLiveSync, createCheckoutRetry } from "./live-sync.js?v=orders-20261021";
+const checkoutRetry=createCheckoutRetry(sessionStorage);
+const liveSync=createLiveSync({headers:syncHeaders,identity:authIdentity,active:()=>!document.hidden&&navigator.onLine!==false&&Boolean(token||deviceToken||originToken),refresh:()=>load(true).catch(showSyncError),status:connected=>{
+  const box=document.querySelector("#orderConnection");if(!box)return;
+  box.hidden=!(token||deviceToken||originToken);box.dataset.connected=String(connected);
+  box.textContent=navigator.onLine===false?"Sem conexão. Confira a internet antes de enviar pedidos.":connected?"Atualização ao vivo ativa":"Atualização periódica ativa · reconectando ao vivo";
+}});
+let kitchenAcknowledging=false;
+async function acknowledgeKitchen(){
+  if(kitchenAcknowledging||document.hidden||!kitchenViewOpen())return;
+  const ids=entries(data.kitchen).filter(([,order])=>!order.received_at&&!["delivered","done","cancelled"].includes(order.status||"pending")).slice(0,80).map(([id])=>id);
+  if(!ids.length)return;
+  kitchenAcknowledging=true;
+  try{
+    const response=await fetch("/api/mutate",{method:"POST",headers:{"content-type":"application/json",...syncHeaders()},body:JSON.stringify({action:"kitchen.received",ids})});
+    if(!response.ok)throw new Error("Não foi possível confirmar o recebimento na cozinha.");
+    await load(true);
+  }catch(error){showSyncError(error)}finally{kitchenAcknowledging=false}
+}
+function kitchenReceipt(order){
+  if(!order.received_at)return (order.status||"pending")==="pending"?'<small class="kitchen-receipt waiting">Aguardando confirmação da cozinha</small>':"";
+  const seconds=Math.max(0,Math.round((Date.parse(order.received_at)-Date.parse(order.created_at))/1000));
+  return `<small class="kitchen-receipt">Recebido na cozinha${Number.isFinite(seconds)?` · ${seconds<60?`${seconds} s`:`${Math.round(seconds/60)} min`} após o envio`:""}</small>`;
+}
 const simpleStockEntry=createStockEntry({getStocks:()=>data.stock_items,openModal,closeModal,modalBody,mutate,draw,toast,esc,money,stockQuantity});
 const reportKinds=["sales","account_payments","staff_shifts","stock_events","hosted_events"];
 function reportQuery(){
@@ -1407,9 +1438,12 @@ function ensureVisibleHistory(){
 }
 document.addEventListener("visibilitychange",()=>{
   clearInterval(refreshTimer);
+  if(document.hidden)liveSync.stop();else liveSync.ensure();
   if(!document.hidden&&(token||deviceToken||originToken))load(true).then(()=>draw()).catch(error=>{showSyncError(error);draw()});
 });
-document.addEventListener("online",()=>{if(!document.hidden&&(token||deviceToken||originToken))load(true).then(()=>draw()).catch(showSyncError)});
+window.addEventListener("online",()=>{liveSync.ensure();if(!document.hidden&&(token||deviceToken||originToken))load(true).then(()=>draw()).catch(showSyncError)});
+window.addEventListener("offline",()=>liveSync.stop());
+window.addEventListener("pagehide",()=>liveSync.stop());
 document.addEventListener("toggle",event=>{
   if(!event.target.isConnected)return;
   if(event.target.open&&event.target.matches?.(".cash-reports,.stock-history,.kitchen-history,.front-kitchen-history")){

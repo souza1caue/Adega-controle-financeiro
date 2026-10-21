@@ -1,5 +1,7 @@
 import { closingSummary } from "./cash-summary.js";
 import { syncState, historyPage, allowedKinds } from "./state-sync.js";
+import { liveTicket, verifyLiveTicket, orderHub, publishChanges } from "./live-orders.js";
+export { OrderLive } from "./live-orders.js";
 function paymentGroup(value) {
   const method = String(value || "").trim();
   if (["Dinheiro", "Dinheiro físico"].includes(method)) return "Dinheiro";
@@ -104,8 +106,8 @@ async function claimDevice(request, env) {
   device.token_hash = await sha256(token);
   device.claimed_at = now();
   delete device.claim_code_hash;
-  const result = await env.DB.prepare("UPDATE records SET data=?,updated_at=CURRENT_TIMESTAMP WHERE kind='device_access' AND id=? AND json_extract(data,'$.claimed_at') IS NULL").bind(JSON.stringify(device), row.id).run();
-  if (Number(result.meta?.changes || 0) !== 1) return reply({ error: "Este código já foi usado em outro aparelho." }, 409);
+  const result = await env.DB.prepare("UPDATE records SET data=?,updated_at=CURRENT_TIMESTAMP WHERE kind='device_access' AND id=? AND json_extract(data,'$.claimed_at') IS NULL RETURNING id").bind(JSON.stringify(device), row.id).first();
+  if (!result) return reply({ error: "Este código já foi usado em outro aparelho." }, 409);
   return reply({ access_token: token, role: device.role, label: device.label });
 }
 
@@ -129,9 +131,9 @@ async function claimStaffAccess(request, env) {
   const deviceToken = `${uid()}${uid()}`;
   access.token_hash = await sha256(deviceToken);
   access.claimed_at = now();
-  const result = await env.DB.prepare("UPDATE records SET data=?,updated_at=CURRENT_TIMESTAMP WHERE kind='staff_access' AND id=? AND json_extract(data,'$.claimed_at') IS NULL")
-    .bind(JSON.stringify(access), row.id).run();
-  if (Number(result.meta?.changes || 0) !== 1) return reply({ error: "Este QR Code já foi utilizado em outro aparelho." }, 409);
+  const result = await env.DB.prepare("UPDATE records SET data=?,updated_at=CURRENT_TIMESTAMP WHERE kind='staff_access' AND id=? AND json_extract(data,'$.claimed_at') IS NULL RETURNING id")
+    .bind(JSON.stringify(access), row.id).first();
+  if (!result) return reply({ error: "Este QR Code já foi utilizado em outro aparelho." }, 409);
   return reply({ access_token: deviceToken, employee_name: access.employee_name });
 }
 
@@ -310,6 +312,7 @@ async function cartItems(db, inputItems) {
 
 async function mutate(request, env) {
   let input = await request.json();
+  const originalPayload = JSON.stringify(input);
   let action = input.action;
   const adminActions = new Set(["menu.cost.mode", "menu.save", "menu.create", "menu.update", "menu.delete", "sale.delete", "sale.void", "cash.open", "cash.movement", "cash.close", "stock.configure", "stock.move", "stock.item.save", "stock.item.delete", "stock.item.move", "stock.purchase.batch", "stock.quick.create", "stock.invoice.import", "stock.event.cancel", "hosted.event.save", "hosted.event.close", "recipe.save", "inventory.start", "inventory.finish", "employee.save", "employee.toggle", "event.save", "staff.shift.save", "staff.shift.pay", "staff.shift.cancel", "staff.access.create", "staff.access.revoke", "device.create", "device.revoke"]);
   const admin = await isAdmin(request, env);
@@ -322,7 +325,7 @@ async function mutate(request, env) {
     await orderOrigin(db, staffToken);
     input.origin_token = staffToken;
   } else if (device) {
-    const allowed = device.role === "front" ? frontActions : new Set(["kitchen.status", "kitchen.printed", "kitchen.requeue"]);
+    const allowed = device.role === "front" ? frontActions : new Set(["kitchen.status", "kitchen.received", "kitchen.printed", "kitchen.requeue"]);
     if (!allowed.has(action)) return reply({ error: `Este dispositivo possui acesso somente ${device.role === "front" ? "à Frente de Caixa" : "à Cozinha"}.` }, 403);
   } else if (!admin) return reply({ error: "Faça login para acessar o sistema." }, 401);
   if (adminActions.has(action) && !admin) return reply({ error: "Acesso administrativo necessário." }, 401);
@@ -367,6 +370,18 @@ async function mutate(request, env) {
     input[field] = typeof input[field] === "string" && input[field].trim() ? input[field].trim() : automaticResponsible;
   }
   const id = input.id || uid();
+  let checkoutReceipt = null;
+  if (action === "sale.checkout" && input.request_id) {
+    if (typeof input.request_id !== "string" || !/^[a-zA-Z0-9-]{16,100}$/.test(input.request_id)) throw new Error("Identificador de pedido inválido.");
+    const principal = frontIdentityToken || staffToken || request.headers.get("x-device-access") || request.headers.get("authorization");
+    const requestKey = await sha256(`${principal}:${input.request_id}`), payloadHash = await sha256(originalPayload);
+    const previous = await db.prepare("SELECT payload_hash,order_id FROM checkout_requests WHERE request_key=?").bind(requestKey).first();
+    if (previous) {
+      if (previous.payload_hash !== payloadHash) return reply({ error: "Este envio já foi usado para outro pedido. Confira os itens." }, 409);
+      return reply({ ok: true, id: previous.order_id, already_recorded: true });
+    }
+    checkoutReceipt = { requestKey, payloadHash };
+  }
   if (action === "staff.cost.total") {
     if (!admin) return reply({ error: "Acesso administrativo necessário." }, 403);
     const open = await db.prepare("SELECT id,data FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
@@ -1136,6 +1151,7 @@ async function mutate(request, env) {
     const customerName = (input.customer_name || "").trim();
     const note = (input.note || "").trim();
     const statements = [];
+    if (checkoutReceipt) statements.push(db.prepare("INSERT INTO checkout_requests(request_key,payload_hash,order_id) VALUES(?,?,?)").bind(checkoutReceipt.requestKey, checkoutReceipt.payloadHash, id));
     const foodItems = items.filter((item) => item.category === "Comidas");
     if (tapPayment) {
       // Atomic unique inserts prevent duplicate sales and stock deductions, including concurrent retries.
@@ -1226,7 +1242,15 @@ async function mutate(request, env) {
       const movement = stockMovement(db, item.menu_id, item.menu_item, "sale", item.quantity, { reason: "Venda", responsible: "Sistema", reference_id: orderId, legacy_menu: true });
       statements.push(putRecord(db, "menu", item.menu_id, item.menu_item), movement);
     }
-    await db.batch(statements);
+    try { await db.batch(statements); }
+    catch (error) {
+      // Concurrent retry: its winning transaction has already committed the receipt.
+      if (checkoutReceipt) {
+        const previous = await db.prepare("SELECT payload_hash,order_id FROM checkout_requests WHERE request_key=?").bind(checkoutReceipt.requestKey).first();
+        if (previous?.payload_hash === checkoutReceipt.payloadHash) return reply({ ok: true, id: previous.order_id, already_recorded: true });
+      }
+      throw error;
+    }
   } else if (action === "sale.create") {
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
     if (!open) throw new Error("Abra o caixa no Admin antes de registrar saídas.");
@@ -1287,6 +1311,13 @@ async function mutate(request, env) {
     }
     statements.unshift(putRecord(db, "sales", id, sale));
     await db.batch(statements);
+  } else if (action === "kitchen.received") {
+    if (!admin && device?.role !== "kitchen") return reply({ error: "Somente a tela da cozinha pode confirmar o recebimento." }, 403);
+    if (!Array.isArray(input.ids)) throw new Error("Lista de pedidos inválida.");
+    const ids = [...new Set(input.ids)];
+    if (!ids.length || ids.length > 80 || ids.some(id => typeof id !== "string" || id.length > 100)) throw new Error("Lista de pedidos inválida.");
+    const receivedAt = now();
+    await db.prepare(`UPDATE records SET data=json_set(data,'$.received_at',?) WHERE kind='kitchen' AND id IN (${ids.map(()=>'?').join(',')}) AND json_extract(data,'$.received_at') IS NULL AND COALESCE(json_extract(data,'$.status'),'pending') NOT IN ('cancelled','done','delivered')`).bind(receivedAt, ...ids).run();
   } else if (action === "kitchen.printed") {
     const order = await readRecord(db, "kitchen", id);
     if (!order) throw new Error("Pedido não encontrado.");
@@ -1295,19 +1326,23 @@ async function mutate(request, env) {
     order.printed_at = now();
     order.print_count = Number(order.print_count || 0) + 1;
     order.last_print_mode = input.mode === "automatic" ? "automatic" : "test";
-    await putRecord(db, "kitchen", id, order).run();
+    await db.prepare("UPDATE records SET data=json_set(data,'$.print_status','printed','$.printed_at',?,'$.print_count',COALESCE(json_extract(data,'$.print_count'),0)+1,'$.last_print_mode',?) WHERE kind='kitchen' AND id=?").bind(order.printed_at, order.last_print_mode, id).run();
   } else if (action === "kitchen.requeue") {
     const order = await readRecord(db, "kitchen", id);
     if (!order) throw new Error("Pedido não encontrado.");
     if (!order.print_status) throw new Error("Pedido anterior ao sistema de impressão.");
     order.print_status = "pending";
     order.requeued_at = now();
-    await putRecord(db, "kitchen", id, order).run();
+    await db.prepare("UPDATE records SET data=json_set(data,'$.print_status','pending','$.requeued_at',?) WHERE kind='kitchen' AND id=?").bind(order.requeued_at, id).run();
   } else if (action === "kitchen.status") {
     const order = await readRecord(db, "kitchen", id);
     if (!order) throw new Error("Pedido não encontrado.");
     const allowed = { started: "started_at", ready: "ready_at", delivered: "delivered_at" };
     if (!allowed[input.status]) throw new Error("Estado inválido.");
+    const current = order.status || "pending";
+    if (current === input.status) return reply({ ok: true, id, already_recorded: true });
+    const next = { pending: "started", started: "ready", ready: "delivered" };
+    if (next[current] !== input.status) return reply({ error: "O pedido mudou de etapa. Atualize a tela antes de continuar." }, 409);
     order.status = input.status;
     order[allowed[input.status]] = now();
     if (input.status === "delivered") {
@@ -1316,7 +1351,10 @@ async function mutate(request, env) {
       order.delivered_source_type = origin.source_type;
       order.delivered_shift_id = origin.source_shift_id || "";
     }
-    await putRecord(db, "kitchen", id, order).run();
+    const patch = { status: input.status, [allowed[input.status]]: order[allowed[input.status]] };
+    if (input.status === "delivered") Object.assign(patch, { delivered_by: order.delivered_by, delivered_source_type: order.delivered_source_type, delivered_shift_id: order.delivered_shift_id });
+    const updated = await db.prepare("UPDATE records SET data=json_patch(data,?) WHERE kind='kitchen' AND id=? AND COALESCE(json_extract(data,'$.status'),'pending')=? RETURNING id").bind(JSON.stringify(patch), id, current).first();
+    if (!updated) return reply({ error: "O pedido mudou de etapa. Atualize a tela antes de continuar." }, 409);
   } else if (action === "cash.open") {
     required(input.opened_by, "o responsável pela abertura");
     const projectCode = input.project_code === "bagaco_laranja" ? "bagaco_laranja" : "adega_regular";
@@ -1439,9 +1477,23 @@ async function extractPdfInvoice(request, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     try {
+      if (url.pathname === "/api/live" && request.method === "GET") {
+        if (request.headers.get("Origin") !== url.origin) return reply({ error: "Origem inválida." }, 403);
+        if (!env.ORDER_LIVE || !env.SESSION_SECRET) return reply({ error: "Atualização automática indisponível." }, 503);
+        if (!await verifyLiveTicket(env.SESSION_SECRET, url.searchParams.get("ticket") || "")) return reply({ error: "Autorização expirada." }, 401);
+        return await orderHub(env).fetch(new Request('https://orders.internal/connect', request));
+      }
+      if (url.pathname === "/api/live-ticket" && request.method === "POST") {
+        const staffToken = request.headers.get("x-staff-access");
+        const admin = await isAdmin(request, env), device = await authorizedDevice(request, env);
+        if (staffToken) { try { await orderOrigin(env.DB, staffToken); } catch { return reply({ error: "Acesso encerrado." }, 401); } }
+        else if (!admin && !device) return reply({ error: "Faça login para acessar o sistema." }, 401);
+        if (!env.ORDER_LIVE || !env.SESSION_SECRET) return reply({ error: "Atualização automática indisponível." }, 503);
+        return reply({ ticket: await liveTicket(env.SESSION_SECRET) });
+      }
       if (["/api/state", "/api/history"].includes(url.pathname) && request.method === "GET") {
         const staffToken = request.headers.get("x-staff-access") || "";
         const admin = await isAdmin(request, env);
@@ -1471,7 +1523,15 @@ export default {
       if (url.pathname === "/api/device/claim" && request.method === "POST") return await claimDevice(request, env);
       if (url.pathname === "/api/staff/claim" && request.method === "POST") return await claimStaffAccess(request, env);
       if (url.pathname === "/api/invoice/pdf" && request.method === "POST") return await extractPdfInvoice(request, env);
-      if (url.pathname === "/api/mutate" && request.method === "POST") return await mutate(request, env);
+      if (url.pathname === "/api/mutate" && request.method === "POST") {
+        const response = await mutate(request, env);
+        if (response.ok) {
+          // Never report a saved sale as failed just because notification delivery failed.
+          const notification = publishChanges(env).catch(error => console.error('Order notification:', error.message));
+          if (ctx?.waitUntil) ctx.waitUntil(notification); else await notification;
+        }
+        return response;
+      }
       if (url.pathname.startsWith("/api/")) return reply({ error: "Rota não encontrada." }, 404);
       return env.ASSETS.fetch(request);
     } catch (error) {

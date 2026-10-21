@@ -407,3 +407,9 @@ dialog:has(.tab-account-statement){width:min(860px,calc(100% - 24px));max-height
 .menu-cost-switch{display:flex;gap:3px;padding:4px;border:1px solid var(--border,#ddd);border-radius:24px;flex-wrap:wrap}.menu-cost-switch button{border:0;border-radius:20px;background:transparent;font-size:13px}.menu-cost-switch button[aria-pressed="true"]{background:#263e31;color:#fff}
 
 #syncStatus[hidden]{display:none}.history-load-more{margin-top:16px;padding:12px 0}.history-load-more p{margin-bottom:8px}
+/* Keep delivery connectivity and receipt confirmation visible during service. */
+.order-connection{margin:8px 24px;color:var(--muted,#a5a89f);font-size:12px}
+.order-connection[data-connected="true"]{color:#91cb92}
+.order-connection[hidden]{display:none}
+.kitchen-receipt{display:block;margin:6px 0;color:#91cb92;font-size:12px}
+.kitchen-receipt.waiting{color:#e9bd70}

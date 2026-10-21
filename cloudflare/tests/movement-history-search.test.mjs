@@ -14,6 +14,7 @@ function searchScreen() {
     matches: selector => selector === '[data-cash-history-search]',
   };
   const context = {
+    liveSync: { ensure() {} },
     page: 'cash', module: 'Admin', token: 'admin', refreshTimer: null,
     cashHistorySearch: '', cashHistoryOpen: false, cashReportsOpen: false, overviewPeriodOpen: false,
     document: { activeElement: oldInput, body: { classList: { toggle() {} } }, addEventListener: (_, callback) => { inputListener = callback; } },

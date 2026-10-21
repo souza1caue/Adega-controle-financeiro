@@ -130,10 +130,10 @@ test('polling pauses in hidden tabs, resumes on visibility and uses slower admin
   assert.equal(refreshDelay('Cozinha','kitchen'),3000);assert.equal(refreshDelay('Admin','cash'),15000);assert.equal(refreshDelay('Admin','stock'),30000);
   assert.equal(refreshDelay('Admin','menu'),60000);assert.equal(refreshDelay('Frente de caixa','sales'),3000);
   const source=readFileSync(new URL('../public/app.js',import.meta.url),'utf8'),listeners={};let tick,loads=0,draws=0;
-  const context={document:{hidden:true,addEventListener:(name,callback)=>listeners[name]=callback},refreshDelay,loadPending:null,module:'Admin',page:'cash',setInterval:callback=>{tick=callback},clearInterval(){},refreshTimer:null,token:'admin',deviceToken:'',originToken:'',load:async()=>{loads++},draw:()=>draws++,showSyncError:assert.fail};
+  const context={liveSync:{shouldPoll:()=>true,stop(){},ensure(){}},document:{hidden:true,addEventListener:(name,callback)=>listeners[name]=callback},refreshDelay,loadPending:null,module:'Admin',page:'cash',setInterval:callback=>{tick=callback},clearInterval(){},refreshTimer:null,token:'admin',deviceToken:'',originToken:'',load:async()=>{loads++},draw:()=>draws++,showSyncError:assert.fail};
   runInNewContext(source.split('\n').find(line=>line.startsWith('function startRefresh('))+'\nstartRefresh(true);',context);
   tick();assert.equal(loads,0);context.document.hidden=false;tick();assert.equal(loads,1);
-  const visibility=source.slice(source.indexOf('document.addEventListener("visibilitychange"'),source.indexOf('document.addEventListener("online"'));
+  const visibility=source.slice(source.indexOf('document.addEventListener("visibilitychange"'),source.indexOf('window.addEventListener("online"'));
   runInNewContext(visibility,context);context.document.hidden=true;listeners.visibilitychange();assert.equal(loads,1);
   context.document.hidden=false;listeners.visibilitychange();await new Promise(resolve=>setImmediate(resolve));assert.equal(loads,2);assert.equal(draws,1);
 });

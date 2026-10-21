@@ -3,6 +3,14 @@ main = "src/worker.js"
 compatibility_date = "2026-07-20"
 workers_dev = true
 
+[[durable_objects.bindings]]
+name = "ORDER_LIVE"
+class_name = "OrderLive"
+
+[[migrations]]
+tag = "v1-order-live"
+new_sqlite_classes = ["OrderLive"]
+
 [ai]
 binding = "AI"
 
