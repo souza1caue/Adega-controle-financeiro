@@ -181,19 +181,21 @@ function syncHeaders(){return {...(frontIdentityToken?{"x-front-identity":frontI
 function startRefresh(render){return setInterval(()=>{if(!document.hidden&&!loadPending&&(typeof liveSync==="undefined"||liveSync.shouldPoll()))load(render).catch(error=>showSyncError(error))},refreshDelay(module,page))}
 function showSyncError(error){if(/exceeded.*(daily|free tier)|daily.*limit|1027/i.test(error.message||""))error=new Error("O limite de uso do Cloudflare foi atingido. Aguarde a renova\u00e7\u00e3o da cota ou confira o plano no painel Cloudflare.");const box=document.querySelector("#syncStatus");if(box){box.hidden=false;box.textContent=error.message||"Falha ao atualizar. Tentaremos novamente."}}
 async function load(render=true){
-  const task=(loadPending||Promise.resolve()).catch(()=>{}).then(()=>loadState(render));
+  const identity=authIdentity();
+  const task=(loadPending||Promise.resolve()).catch(()=>{}).then(()=>{if(identity===authIdentity())return loadState(render)});
   loadPending=task;
   try{return await task}finally{if(loadPending===task)loadPending=null}
 }
 async function loadState(render=true){
   const identity=authIdentity();
   if(identity!==syncIdentity){syncGeneration++;syncIdentity=identity;syncCursor=null;syncVersions.clear();historyLoads.clear();historyPages.clear()}
+  const requestGeneration=syncGeneration;
   const previousCursor=syncCursor,previousIdentity=JSON.stringify(data.front_identity);
 
   const response=await fetch(`/api/state${syncCursor===null?"":"?since="+syncCursor}`,{headers:{...(frontIdentityToken?{"x-front-identity":frontIdentityToken}:{}),...(originToken?{"x-staff-access":originToken}:{}),...(deviceToken?{"x-device-access":deviceToken}:{}),...(token?{authorization:`Bearer ${token}`}:{})}});
-  if(identity!==authIdentity())return;
+  if(identity!==authIdentity()||requestGeneration!==syncGeneration)return;
   if(!response.ok&&response.status!==401){const result=await response.json().catch(()=>({}));throw new Error(result.error||"Falha ao atualizar os dados. Tentaremos novamente.")}
-  if(response.status===401&&deviceToken.startsWith("operation.")&&["Frente de caixa","Cozinha"].includes(module)){await openOperationalAccess(module==="Cozinha"?"kitchen":"front");return loadState(render)}
+  if(response.status===401&&deviceToken.startsWith("operation.")&&["Frente de caixa","Cozinha"].includes(module)){if(!await openOperationalAccess(module==="Cozinha"?"kitchen":"front",moduleEntryGeneration,true))return;return loadState(render)}
   if(!response.ok){
     frontIdentityToken="";localStorage.removeItem("frontIdentityToken");data.front_identity=null;
     if(originToken){originToken="";localStorage.removeItem("staffAccessToken");history.replaceState({},"",location.pathname);module=null;page=null;if(render){draw();toast("O caixa foi fechado. O acesso deste aparelho foi encerrado.",true)}}
@@ -201,6 +203,7 @@ async function loadState(render=true){
     throw new Error("Não foi possível carregar os dados.");
   }
   const incoming=await response.json();
+  if(identity!==authIdentity()||requestGeneration!==syncGeneration)return;
   syncUsage.requests++;if(incoming.sync?.usage?.available){syncUsage.measured=true;syncUsage.rows+=Number(incoming.sync.usage.data_rows_read||0)}
   const changed=previousCursor!==incoming.sync?.cursor||previousIdentity!==JSON.stringify(incoming.front_identity)||!incoming.sync?.incremental;
   if(previousCursor!==null&&!incoming.sync?.incremental){syncGeneration++;historyLoads.clear();historyPages.clear()}
@@ -257,37 +260,53 @@ function heading(title,action=""){return `<div class="section-head"><div><div cl
 function empty(text){return `<div class="empty">${esc(text)}</div>`}
 
 function portal(){
+  operationAccessCache.prefetch();
   nav.innerHTML="";
   app.innerHTML=`<section class="portal"><div class="eyebrow">Controle da Adega</div><h1>Escolha onde entrar</h1><p class="subtitle">Caixa e Cozinha pelo mesmo link, com pedidos atualizados em tempo real.</p><div class="module-grid">  ${[["Frente de caixa","Caixa","Vendas, comandas e acompanhamento de pedidos."],["Cozinha","Cozinha","Fila de preparo e pedidos prontos."],["Admin","Admin","Estoque, caixa, cardápio e relatórios. Acesso com senha."]].map(([name,label,description])=>`<button class="module-card" data-module="${name}"><span>ACESSAR</span><b>${label}</b><span>${description}</span></button>`).join("")}  </div></section>`;
 }
-let moduleEntryGeneration=0;
-async function openOperationalAccess(role,generation=moduleEntryGeneration){
-  const response=await fetch("/api/access",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({role})}),result=await response.json();
+let moduleEntryGeneration=0,moduleLoading=false;
+const moduleStateCache=new Map();
+async function openOperationalAccess(role,generation=moduleEntryGeneration,force=false){
+  const result=await operationAccessCache.get(role,force);
   if(generation!==moduleEntryGeneration)return false;
-  if(!response.ok)throw new Error(result.error||"Não foi possível acessar esta área.");
   deviceToken=result.access_token;deviceRole=result.role;
   localStorage.setItem("deviceAccessToken",deviceToken);localStorage.setItem("deviceRole",deviceRole);
   return true;
 }
 async function enterModule(name){
   if(!["Frente de caixa","Cozinha","Admin"].includes(name))return;
+  if(syncIdentity===authIdentity()&&syncCursor!==null)moduleStateCache.set(syncIdentity,{data,cursor:syncCursor,versions:new Map(syncVersions)});
   const generation=++moduleEntryGeneration;
   liveSync.stop();
+  clearInterval(refreshTimer);loadPending=null;syncGeneration++;
   module=name;page=name==="Cozinha"?"kitchen":name==="Admin"?"cash":"sales";
+  moduleLoading=true;
+  setupNav([]);app.innerHTML='<div class="loading" role="status">Abrindo '+(name==="Frente de caixa"?"Caixa":name)+'…</div>';
   originToken="";staffDeviceManaged=false;inviteToken="";
   localStorage.removeItem("staffAccessToken");localStorage.removeItem("staffDeviceManaged");
   deviceToken="";deviceRole="";localStorage.removeItem("deviceAccessToken");localStorage.removeItem("deviceRole");
   knownKitchenOrderIds=null;knownFrontKitchenStatuses=null;
   try{
     if(name!=="Admin"&&!await openOperationalAccess(name==="Cozinha"?"kitchen":"front",generation))return;
+    const identity=authIdentity(),cached=moduleStateCache.get(identity);
+    historyLoads.clear();historyPages.clear();
+    if(cached){
+      data=cached.data;syncIdentity=identity;syncCursor=cached.cursor;syncVersions.clear();
+      for(const[key,value]of cached.versions)syncVersions.set(key,value);
+      moduleLoading=false;
+      if(kitchenViewOpen())prepareKitchenAlerts();
+      if(readyAlertsOpen())prepareFrontAlerts();
+      draw();load(true).catch(showSyncError);return;
+    }
     if(name!=="Admin"||token)await load(false);
-  }catch(error){if(generation===moduleEntryGeneration){module=null;page=null;draw()}throw error}
+  }catch(error){if(generation===moduleEntryGeneration){moduleLoading=false;module=null;page=null;draw()}throw error}
   if(generation!==moduleEntryGeneration)return;
+  moduleLoading=false;
   if(kitchenViewOpen())prepareKitchenAlerts();
   if(readyAlertsOpen())prepareFrontAlerts();
   draw();
 }
-function setupNav(items){nav.innerHTML=fiadoLabels([["Frente de caixa","Caixa"],["Cozinha","Cozinha"],["Admin","Admin"]].map(([name,label])=>`<button data-module="${name}" class="${module===name?'nav-active':''}">${label}</button>`).join("")+items.map(([key,label])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${label}</button>`).join(""))}
+function setupNav(items){nav.innerHTML=fiadoLabels(items.map(([key,label])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${label}</button>`).join("")+'<button data-home class="ghost">Módulos</button>')}
 function frontIdentityBar(){
   const name=data.front_identity?.source_name||"";
   if(name)return `<section class="front-identity"><label>Atendente<input value="${esc(name)}" readonly aria-label="Atendente deste caixa"></label><span>Nome confirmado até o fechamento do caixa</span></section>`;
@@ -298,6 +317,7 @@ function sharedStaffAccessDialog(accessToken){
   openModal(`<h2>QR Code da equipe</h2><p>Todos os funcionários podem usar este mesmo QR Code. Cada um digita o próprio nome no seu aparelho.</p><img class="staff-qr" src="${qr}" alt="QR Code geral da equipe"><label class="field">Link de acesso<input value="${esc(url)}" readonly></label><p class="muted">O acesso e os nomes confirmados valem até o fechamento deste caixa.</p>`);
 }
 function draw(){
+  if(typeof moduleLoading!=="undefined"&&moduleLoading){setupNav([]);app.innerHTML='<div class="loading" role="status">Abrindo módulo…</div>';return}
   liveSync.ensure();
   const frontNameInput=document.activeElement?.matches?.("[data-front-name]")?document.activeElement:null;
   const frontNameDraft=frontNameInput?{value:frontNameInput.value,start:frontNameInput.selectionStart,end:frontNameInput.selectionEnd}:null;
@@ -1107,7 +1127,7 @@ document.addEventListener("click",async event=>{
     else if(el.hasAttribute("data-admin-logout")){token="";localStorage.removeItem("adminToken");sessionStorage.removeItem("adminToken");module=null;page=null;draw()}
     else if(el.hasAttribute("data-device-logout")){deviceToken="";deviceRole="";localStorage.removeItem("deviceAccessToken");localStorage.removeItem("deviceRole");module=null;page=null;draw()}
     else if(el.hasAttribute("data-owner-login")){staffDeviceManaged=false;localStorage.removeItem("staffDeviceManaged");module=null;page=null;draw()}
-    else if(el.hasAttribute("data-home")||el.id==="homeBtn"){moduleEntryGeneration++;directKitchen=false;history.replaceState({},"",location.pathname);module=null;page=null;knownKitchenOrderIds=null;knownFrontKitchenStatuses=null;draw()}
+    else if(el.hasAttribute("data-home")||el.id==="homeBtn"){moduleEntryGeneration++;moduleLoading=false;directKitchen=false;history.replaceState({},"",location.pathname);module=null;page=null;knownKitchenOrderIds=null;knownFrontKitchenStatuses=null;draw()}
     else if(el.hasAttribute("data-close"))closeModal();
     else if(el.dataset.cartAdd)changeCart(el.dataset.cartAdd,1);
     else if(el.dataset.cartMinus)changeCart(el.dataset.cartMinus,-1);
@@ -1384,6 +1404,8 @@ document.addEventListener("fullscreenchange",()=>{if(kitchenViewOpen())draw()});
 import { createStockEntry } from "./stock-entry.js";
 import { mergeState, mergeRecords, refreshDelay } from "./data-sync.js?v=incremental-20261020";
 import { createLiveSync, createCheckoutRetry } from "./live-sync.js?v=orders-20261021";
+import { createOperationAccessCache } from "./module-access.js?v=fast-modules-20261021";
+const operationAccessCache=createOperationAccessCache();
 const checkoutRetry=createCheckoutRetry(sessionStorage);
 const liveSync=createLiveSync({headers:syncHeaders,identity:authIdentity,active:()=>Boolean(module)&&!document.hidden&&navigator.onLine!==false&&Boolean(token||deviceToken||originToken),refresh:()=>load(true).catch(showSyncError),status:connected=>{
   const box=document.querySelector("#orderConnection");if(!box)return;

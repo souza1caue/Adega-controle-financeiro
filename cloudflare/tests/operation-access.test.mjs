@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { fixture, worker } from './fixture.mjs';
 import { operationAccess, verifyOperationAccess } from '../src/operation-access.js';
+import { createOperationAccessCache } from '../public/module-access.js';
 
 async function access(f, role) {
   const response = await worker.fetch(new Request('http://localhost/api/access', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ role }) }), f.env);
@@ -60,12 +61,17 @@ function screen() {
   const context = {
     app: {}, nav: {}, module: null, page: null, token: '', deviceToken: 'legacy-device', deviceRole: 'kitchen', originToken: 'old-staff', staffDeviceManaged: true, inviteToken: '',
     knownKitchenOrderIds: null, knownFrontKitchenStatuses: null,
+    syncIdentity: '', syncCursor: null, syncVersions: new Map(), syncGeneration: 0, loadPending: null,
+    historyLoads: new Map(), historyPages: new Map(), refreshTimer: null, clearInterval() {}, data: {},
     localStorage: { setItem() {}, removeItem() {} }, liveSync: { stop() {} },
-    load: async () => reads.push(context.module), draw: () => draws.push(context.module),
+    load: async () => { reads.push(context.module); context.syncIdentity=context.authIdentity();context.syncCursor=1;context.data={role:context.deviceRole}; }, draw: () => draws.push(context.module),showSyncError:assert.fail,
     prepareKitchenAlerts() {}, prepareFrontAlerts() {}, kitchenViewOpen: () => context.module === 'Cozinha', readyAlertsOpen: () => false,
     fiadoLabels: value => value,
-    fetch: async (_, options) => { const { role } = JSON.parse(options.body); requests.push(role); return { ok: true, json: async () => ({ access_token: `operation.${role}`, role }) }; },
+    fetch: async (_, options) => { const { role } = JSON.parse(options.body); requests.push(role); return { ok: true, json: async () => ({ access_token: `operation.${role}`, role,expires_at:Date.now()+86400000 }) }; },
   };
+  context.authIdentity=()=>JSON.stringify([context.token,context.deviceToken,context.originToken]);
+  const saved=new Map();
+  context.operationAccessCache=createOperationAccessCache({request:(...args)=>context.fetch(...args),storage:{getItem:key=>saved.get(key),setItem:(key,value)=>saved.set(key,value)}});
   runInNewContext(source.slice(source.indexOf('function portal(){'), source.indexOf('function frontIdentityBar(){')) + '\n' + source.split('\n').find(line => line.startsWith('function loginPage(){')), context);
   return { context, requests, reads, draws };
 }
@@ -77,16 +83,29 @@ test('entry always shows the module choices, and operational tabs switch without
   await c.enterModule('Cozinha'); assert.equal(c.module, 'Cozinha'); assert.equal(c.deviceRole, 'kitchen'); assert.equal(c.originToken, '');
   await c.enterModule('Frente de caixa'); assert.equal(c.module, 'Frente de caixa'); assert.equal(c.deviceRole, 'front');
   await c.enterModule('Admin'); assert.equal(c.module, 'Admin'); assert.equal(c.deviceToken, '');
-  assert.deepEqual(h.requests, ['kitchen', 'front']); assert.deepEqual(h.reads, ['Cozinha', 'Frente de caixa']);
+  assert.deepEqual(h.requests.sort(), ['front', 'kitchen']); assert.deepEqual(h.reads, ['Cozinha', 'Frente de caixa']);
   assert.match(c.loginPage(), /type="password"/); assert.doesNotMatch(c.loginPage(), /device-claim/);
-  c.setupNav([]); assert.match(c.nav.innerHTML, /data-module="Cozinha"/); assert.match(c.nav.innerHTML, /data-module="Frente de caixa"/);
+  c.setupNav([]); assert.match(c.nav.innerHTML, /data-home/);assert.doesNotMatch(c.nav.innerHTML,/data-module/);
 });
 
 test('a slow previous selection cannot override the last operational tab selected', async () => {
   const h = screen(), c = h.context, pending = [];
-  c.fetch = (_, options) => new Promise(resolve => pending.push(() => resolve({ ok: true, json: async () => ({ role: JSON.parse(options.body).role, access_token: JSON.parse(options.body).role }) })));
+  c.fetch = (_, options) => new Promise(resolve => pending.push(() => resolve({ ok: true, json: async () => ({ role: JSON.parse(options.body).role, access_token: JSON.parse(options.body).role,expires_at:Date.now()+86400000 }) })));
   const kitchen = c.enterModule('Cozinha'), front = c.enterModule('Frente de caixa');
   pending[1](); await front; pending[0](); await kitchen;
   assert.equal(c.module, 'Frente de caixa'); assert.equal(c.deviceRole, 'front');
   assert.deepEqual(h.draws, ['Frente de caixa']);
+});
+
+test('returning to a loaded module shows its cached data before background refresh completes',async()=>{
+  const h=screen(),c=h.context;
+  await c.enterModule('Frente de caixa');
+  await c.enterModule('Cozinha');
+  const before=h.draws.length;
+  let finish;
+  c.load=()=>new Promise(resolve=>{finish=resolve});
+  await c.enterModule('Frente de caixa');
+  assert.equal(h.draws.length,before+1);assert.equal(c.data.role,'front');
+  assert.equal(h.requests.length,2); // Reuse both signed accesses instead of issuing another one.
+  finish();
 });

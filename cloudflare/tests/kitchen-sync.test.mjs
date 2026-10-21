@@ -89,3 +89,18 @@ test('new kitchen device still receives old unfinished orders after reconnecting
     assert.deepEqual(Object.keys(kitchen.context.data.kitchen).sort(), ['pending', 'ready', 'started']);
   } finally { f.sqlite.close(); }
 });
+
+test('a delayed response body cannot overwrite a module opened after that request started',async()=>{
+  const f=fixture();
+  try{
+    const front=client(f,device(f,'front'));
+    await front.load();const cursor=front.context.syncCursor;
+    let finish;
+    front.context.fetch=async()=>({ok:true,json:()=>new Promise(resolve=>{finish=resolve})});
+    const pending=front.load();await new Promise(resolve=>setImmediate(resolve));
+    front.context.syncGeneration++;
+    finish({kitchen:{stale:{status:'ready'}},sync:{cursor:cursor+1,incremental:true,versions:{}}});
+    await pending;
+    assert.equal(front.context.data.kitchen.stale,undefined);assert.equal(front.context.syncCursor,cursor);
+  }finally{f.sqlite.close()}
+});

@@ -1486,7 +1486,7 @@ export default {
         if (!env.SESSION_SECRET) return reply({ error: "Acesso operacional indisponível." }, 503);
         const { role } = await request.json();
         if (!["front", "kitchen"].includes(role)) return reply({ error: "Escolha Caixa ou Cozinha." }, 400);
-        return reply({ access_token: await operationAccess(role, env.SESSION_SECRET), role });
+        return reply({ access_token: await operationAccess(role, env.SESSION_SECRET), role, expires_at: Date.now() + 86400000 });
       }
       if (url.pathname === "/api/live" && request.method === "GET") {
         if (request.headers.get("Origin") !== url.origin) return reply({ error: "Origem inválida." }, 403);

@@ -10,7 +10,12 @@ renew automatically when needed, and do not create D1 device records.
 Admin still requires its administrative login; operational tokens cannot grant
 administrative privileges. The front retains cashier name identification for
 audit attribution. Legacy QR and authorized-device APIs remain compatible.
-The top navigation switches operational roles through the same URL.
+The Módulos button returns to the original choice screen on the same URL.
+Operational accesses are prepared in the background and reused until near expiry.
+Loaded module snapshots and revision cursors stay in memory, scoped to their
+authentication identity: returning to one renders immediately and reconciles
+changes in the background. Delayed responses from a previous navigation are
+discarded, and switching no longer waits behind its previous request queue.
 
 Authenticated, visible clients obtain a signed 60-second connection ticket from
 `POST /api/live-ticket` and open `/api/live` with a same-origin WebSocket.
