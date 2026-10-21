@@ -39,7 +39,7 @@ test('invalid, unauthorized, and historical cost edits do not change stored cost
 const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 function screen(data) {
   const context = {
-    data, staffCashId: 'cash', operatingEventId: '', entries: value => Object.entries(value || {}),
+    data, historyScopeReady:()=>true, staffCashId: 'cash', operatingEventId: '', entries: value => Object.entries(value || {}),
     activeCash: () => ['cash', data.cash.cash],
     hostedEventActualCost: (_, event) => event.actual_cost || 0,
     esc: value => String(value).replaceAll('<', '&lt;'), money: value => `R$ ${value}`, date: value => value,

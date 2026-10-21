@@ -405,3 +405,5 @@ dialog:has(.tab-account-statement){width:min(860px,calc(100% - 24px));max-height
 .operating-main-blocks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;align-items:stretch}.operating-main-block{display:flex;flex-direction:column;min-width:0;gap:20px}.operating-main-block>h2{margin:0}.operating-value-form{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}.operating-value-form .field{margin:0}.operating-block-consumption{margin-top:auto;border-top:1px solid var(--line);padding-top:20px}.operating-block-consumption .dashboard-card-head{flex-wrap:wrap;gap:12px}.operating-main-block .operating-event-form{margin:0}@media(max-width:800px){.operating-main-blocks{grid-template-columns:minmax(0,1fr)}}
 
 .menu-cost-switch{display:flex;gap:3px;padding:4px;border:1px solid var(--border,#ddd);border-radius:24px;flex-wrap:wrap}.menu-cost-switch button{border:0;border-radius:20px;background:transparent;font-size:13px}.menu-cost-switch button[aria-pressed="true"]{background:#263e31;color:#fff}
+
+#syncStatus[hidden]{display:none}.history-load-more{margin-top:16px;padding:12px 0}.history-load-more p{margin-bottom:8px}

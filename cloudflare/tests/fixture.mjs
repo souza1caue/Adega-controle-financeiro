@@ -17,7 +17,7 @@ export function fixture() {
   const env = { DB: db, SESSION_SECRET: 'test-secret', ADMIN_PASSWORD: 'test-password' };
   sqlite.prepare('INSERT INTO sessions(token_hash,expires_at) VALUES(?,?)').run(createHash('sha256').update('test-token:test-secret').digest('hex'), '2099-01-01');
   const put = (kind,id,data) => sqlite.prepare('INSERT OR REPLACE INTO records(kind,id,data) VALUES(?,?,?)').run(kind,id,JSON.stringify(data));
-  const records = kind => sqlite.prepare('SELECT id,data FROM records WHERE kind=?').all(kind).map(r => ({id:r.id,...JSON.parse(r.data)}));
+  const records = kind => sqlite.prepare('SELECT id,data FROM records WHERE kind=? ORDER BY rowid').all(kind).map(r => ({id:r.id,...JSON.parse(r.data)}));
   const balance = id => sqlite.prepare('SELECT quantity FROM stock_balances WHERE id=?').get(id)?.quantity;
   async function call(payload, headers = { authorization:'Bearer test-token' }) {
     const response = await worker.fetch(new Request('http://localhost/api/mutate',{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify(payload)}),env);

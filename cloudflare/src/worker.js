@@ -1,3 +1,5 @@
+import { closingSummary } from "./cash-summary.js";
+import { syncState, historyPage, allowedKinds } from "./state-sync.js";
 function paymentGroup(value) {
   const method = String(value || "").trim();
   if (["Dinheiro", "Dinheiro físico"].includes(method)) return "Dinheiro";
@@ -9,7 +11,7 @@ function receivedPaymentMethod(value) {
   if (!["Dinheiro", "Digital"].includes(method)) throw new Error("Forma de pagamento inválida.");
   return method;
 }
-const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
+const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 // Operational flag, also exposed to the UI through /api/state.
 const ALLOW_SALES_WITHOUT_STOCK = true;
 const KINDS = ["settings", "menu", "accounts", "account_payments", "sales", "kitchen", "cash", "stock_movements", "stock_items", "recipes", "inventories", "employees", "staff_shifts", "device_access", "stock_events", "hosted_events"];
@@ -43,18 +45,6 @@ async function menuCostSnapshot(db, menuId, usage, multiplier = 1) {
   return { cost_mode: fixed ? "fixed" : "stock", unit_cost: fixed ? Number(item?.fixed_cost_price || 0) : usage.length ? usage.reduce((sum, part) => sum + Number(part.quantity || 0) * Number(part.unit_cost || 0), 0) / multiplier : Number(item?.cost_price || 0) };
 }
 
-async function state(db) {
-  const rows = await db.prepare("SELECT kind,id,data FROM records ORDER BY created_at").all();
-  const result = Object.fromEntries(KINDS.map((kind) => [kind, {}]));
-  result.stock_policy = { allow_sales_without_stock: ALLOW_SALES_WITHOUT_STOCK };
-  for (const row of rows.results) if (result[row.kind]) result[row.kind][row.id] = JSON.parse(row.data);
-  const balances = await db.prepare("SELECT id,quantity,updated_at FROM stock_balances").all();
-  for (const balance of balances.results) if (result.stock_items[balance.id]) {
-    result.stock_items[balance.id].stock_quantity = Number(balance.quantity);
-    result.stock_items[balance.id].stock_updated_at = balance.updated_at;
-  }
-  return result;
-}
 
 async function isAdmin(request, env) {
   const header = request.headers.get("authorization") || "";
@@ -1385,6 +1375,7 @@ async function mutate(request, env) {
       grouped.set(key, current);
     }
     cash.items = [...grouped.values()].sort((a, b) => a.description.localeCompare(b.description));
+    cash.closing_summary = await closingSummary(db, id, parsed);
     const accessRows = await db.prepare("SELECT id,data FROM records WHERE kind='staff_access' AND json_extract(data,'$.cash_session_id')=? AND json_extract(data,'$.revoked_at') IS NULL").bind(id).all();
     const statements = [putRecord(db, "cash", id, cash)];
     const closingEvents = await db.prepare("SELECT id,data FROM records WHERE kind='hosted_events' AND json_extract(data,'$.cash_session_id')=?").bind(id).all();
@@ -1451,17 +1442,20 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
-      if (url.pathname === "/api/state" && request.method === "GET") {
+      if (["/api/state", "/api/history"].includes(url.pathname) && request.method === "GET") {
         const staffToken = request.headers.get("x-staff-access") || "";
         const admin = await isAdmin(request, env);
         const device = await authorizedDevice(request, env);
-        if (staffToken) await orderOrigin(env.DB, staffToken);
+        let staffIdentity = null;
+        if (staffToken) { try { staffIdentity = await orderOrigin(env.DB, staffToken); } catch (error) { return reply({ error: error.message }, 401); } }
         else if (!admin && !device) return reply({ error: "Faça login para acessar o sistema." }, 401);
-        const result = await state(env.DB);
+        const kinds = allowedKinds(admin, device?.role === "kitchen");
+        if (url.pathname === "/api/history") return reply(await historyPage(env.DB, url.searchParams, kinds));
+        const result = await syncState(env.DB, url.searchParams, kinds);
         const identityToken = request.headers.get("x-front-identity") || staffToken;
         result.front_identity = null;
         if (identityToken) {
-          try { result.front_identity = await orderOrigin(env.DB, identityToken); } catch { /* Closed identities are discarded by the client. */ }
+          try { result.front_identity = identityToken === staffToken ? staffIdentity : await orderOrigin(env.DB, identityToken); } catch { /* Closed identities are discarded by the client. */ }
         }
         for (const access of Object.values(result.device_access || {})) {
           delete access.token_hash;

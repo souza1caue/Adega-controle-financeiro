@@ -30,7 +30,7 @@ function searchScreen() {
       },
       querySelector: selector => selector === '[data-cash-history-search]' ? renderedInput : null,
     },
-    clearInterval() {}, setInterval() {}, activeCash: () => null, setupNav() {},
+    clearInterval() {}, setInterval() {}, startRefresh() {}, ensureVisibleHistory() {}, activeCash: () => null, setupNav() {},
     adminShell: value => value, fiadoLabels: value => value,
     unifiedCashPage: () => context.cashHistorySearch,
     scheduleSearchRender: (selector, render) => { pendingRender = { selector, render }; },

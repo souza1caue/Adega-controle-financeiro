@@ -173,15 +173,39 @@ function notificationAction(context="front"){
   return`<button class="notification-enable ${Notification.permission==="denied"?'danger':''}" data-enable-notifications>${Notification.permission==="denied"?'Notificações bloqueadas':'Ativar notificações'}</button>`;
 }
 
+let syncCursor=null, syncIdentity="", loadPending=null, syncGeneration=0;
+const syncVersions=new Map(), historyLoads=new Map(), historyPages=new Map();
+const syncUsage={started:Date.now(),requests:0,rows:0,measured:false};
+const authIdentity=()=>JSON.stringify([token,deviceToken,originToken]);
+function syncHeaders(){return {...(frontIdentityToken?{"x-front-identity":frontIdentityToken}:{}),...(originToken?{"x-staff-access":originToken}:{}),...(deviceToken?{"x-device-access":deviceToken}:{}),...(token?{authorization:`Bearer ${token}`}:{})}}
+function startRefresh(render){return setInterval(()=>{if(!document.hidden&&!loadPending)load(render).catch(error=>showSyncError(error))},refreshDelay(module,page))}
+function showSyncError(error){if(/exceeded.*(daily|free tier)|daily.*limit|1027/i.test(error.message||""))error=new Error("O limite de uso do Cloudflare foi atingido. Aguarde a renova\u00e7\u00e3o da cota ou confira o plano no painel Cloudflare.");const box=document.querySelector("#syncStatus");if(box){box.hidden=false;box.textContent=error.message||"Falha ao atualizar. Tentaremos novamente."}}
 async function load(render=true){
-  const response=await fetch("/api/state",{headers:{...(frontIdentityToken?{"x-front-identity":frontIdentityToken}:{}),...(originToken?{"x-staff-access":originToken}:{}),...(deviceToken?{"x-device-access":deviceToken}:{}),...(token?{authorization:`Bearer ${token}`}:{})}});
+  const task=(loadPending||Promise.resolve()).catch(()=>{}).then(()=>loadState(render));
+  loadPending=task;
+  try{return await task}finally{if(loadPending===task)loadPending=null}
+}
+async function loadState(render=true){
+  const identity=authIdentity();
+  if(identity!==syncIdentity){syncGeneration++;syncIdentity=identity;syncCursor=null;syncVersions.clear();historyLoads.clear();historyPages.clear()}
+  const previousCursor=syncCursor,previousIdentity=JSON.stringify(data.front_identity);
+
+  const response=await fetch(`/api/state${syncCursor===null?"":"?since="+syncCursor}`,{headers:{...(frontIdentityToken?{"x-front-identity":frontIdentityToken}:{}),...(originToken?{"x-staff-access":originToken}:{}),...(deviceToken?{"x-device-access":deviceToken}:{}),...(token?{authorization:`Bearer ${token}`}:{})}});
+  if(identity!==authIdentity())return;
+  if(!response.ok&&response.status!==401){const result=await response.json().catch(()=>({}));throw new Error(result.error||"Falha ao atualizar os dados. Tentaremos novamente.")}
   if(!response.ok){
     frontIdentityToken="";localStorage.removeItem("frontIdentityToken");data.front_identity=null;
     if(originToken){originToken="";localStorage.removeItem("staffAccessToken");history.replaceState({},"",location.pathname);module=null;page=null;if(render){draw();toast("O caixa foi fechado. O acesso deste aparelho foi encerrado.",true)}}
     else if(token||deviceToken){token="";deviceToken="";deviceRole="";localStorage.removeItem("adminToken");sessionStorage.removeItem("adminToken");localStorage.removeItem("deviceAccessToken");localStorage.removeItem("deviceRole");module=null;page=null;if(render){draw();toast("Sua autorização expirou ou foi revogada.",true)}}
     throw new Error("Não foi possível carregar os dados.");
   }
-  const nextData=await response.json();
+  const incoming=await response.json();
+  syncUsage.requests++;if(incoming.sync?.usage?.available){syncUsage.measured=true;syncUsage.rows+=Number(incoming.sync.usage.data_rows_read||0)}
+  const changed=previousCursor!==incoming.sync?.cursor||previousIdentity!==JSON.stringify(incoming.front_identity)||!incoming.sync?.incremental;
+  if(previousCursor!==null&&!incoming.sync?.incremental){syncGeneration++;historyLoads.clear();historyPages.clear()}
+  const nextData=mergeState(data,incoming,syncVersions);
+  syncCursor=incoming.sync?.cursor??null;
+  const syncStatus=document.querySelector("#syncStatus");if(syncStatus)syncStatus.hidden=true;
   for(const account of Object.values(nextData.accounts||{}))delete account.blocked;
   if(kitchenViewOpen()){
     const nextIds=new Set(Object.keys(nextData.kitchen||{}));
@@ -199,7 +223,8 @@ async function load(render=true){
     originToken="";localStorage.removeItem("staffAccessToken");history.replaceState({},"",location.pathname);module=null;page=null;
     if(render)toast("O caixa foi fechado. O acesso deste aparelho foi encerrado.",true);
   }
-  if(render){
+  if(incoming.sync?.more)return loadState(render);
+  if(render&&changed){
     const choosingOverviewDate=page==="summary"&&document.activeElement?.matches?.(".overview-custom-range input[type='date']");
     if(!choosingOverviewDate)draw();
   }
@@ -263,11 +288,11 @@ function draw(){
     app.innerHTML=fiadoLabels(frontIdentityBar()+(data.front_identity?.source_name?(page==="sales"?salesPage():page==="accounts"?accountsPage():frontKitchenPage()):""));
     if(frontNameDraft){const input=app.querySelector("[data-front-name]");if(input){input.value=frontNameDraft.value;input.focus({preventScroll:true});input.setSelectionRange(frontNameDraft.start,frontNameDraft.end)}}
     centerSaleCategory();
-    refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
+    refreshTimer=startRefresh(true);
   }else if(module==="Cozinha"){
-    page="kitchen";setupNav([]);app.innerHTML=fiadoLabels(kitchenPage());refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
+    page="kitchen";setupNav([]);app.innerHTML=fiadoLabels(kitchenPage());refreshTimer=startRefresh(true);
   }else if(module==="Impressora"){
-    page="printer";setupNav([]);app.innerHTML=fiadoLabels(printerPage());refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);queueAutomaticPrint();
+    page="printer";setupNav([]);app.innerHTML=fiadoLabels(printerPage());refreshTimer=startRefresh(true);queueAutomaticPrint();
   }else{
     if(!token){setupNav([]);app.innerHTML=loginPage();return}
     page ||= "cash";setupNav([]);
@@ -277,17 +302,18 @@ function draw(){
     const content=page==="summary"?overviewPage():page==="menu"?menuPage():page==="stock"?intelligentStockPage():page==="cash"?unifiedCashPage():page==="accounts"?accountsPage():page==="staff"?staffPageSimple():page==="kitchen"?kitchenPage():printerPage();
     app.innerHTML=fiadoLabels(adminShell(content));
     if(page==="cash"&&overviewPeriodOpen)app.querySelector(".overview-period-details")?.setAttribute("open","");
-    if(page==="summary"||page==="stock"||page==="cash")refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
-    else if(page==="kitchen")refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);
-    else refreshTimer=setInterval(()=>load(false).catch(()=>{}),3000);
-    if(page==="adminPrinter"){refreshTimer=setInterval(()=>load(true).catch(()=>{}),3000);queueAutomaticPrint()}
+    if(page==="summary"||page==="stock"||page==="cash")refreshTimer=startRefresh(true);
+    else if(page==="kitchen")refreshTimer=startRefresh(true);
+    else refreshTimer=startRefresh(false);
+    if(page==="adminPrinter"){refreshTimer=startRefresh(true);queueAutomaticPrint()}
   }
   if(stockSearchSelection){const input=app.querySelector("[data-stock-search]");if(input){input.focus({preventScroll:true});input.setSelectionRange(...stockSearchSelection)}}
   if(stockHistorySearchSelection){const input=app.querySelector("[data-stock-history-search]");if(input){input.focus({preventScroll:true});input.setSelectionRange(...stockHistorySearchSelection)}}
   if(cashHistorySearchSelection){const input=app.querySelector("[data-cash-history-search]");if(input){input.focus({preventScroll:true});input.setSelectionRange(...cashHistorySearchSelection)}}
+  ensureVisibleHistory();
 }
 
-function adminShell(content){const groups=[["Operação",[["cash","Caixa"],["stock","Estoque"],["staff","Funcionamento"]]],["Cadastros",[["menu","Cardápio"],["accounts","Fiado"]]]];return `<div class="admin-layout"><aside class="admin-sidebar"><div class="admin-identity"><span class="eyebrow">Administração</span><b>Controle da Adega</b></div><div class="admin-alert-control">${notificationAction()}</div>${groups.map(([label,items])=>`<div class="admin-nav-group"><small>${label}</small>${items.map(([key,text])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${text}</button>`).join("")}</div>`).join("")}<a class="admin-kitchen-link" href="/?area=cozinha" target="_blank" rel="noopener">Abrir cozinha ↗</a><button class="ghost admin-logout" data-admin-logout>Sair do Admin</button></aside><section class="admin-content">${content}</section></div>`}
+function adminShell(content){const groups=[["Operação",[["cash","Caixa"],["stock","Estoque"],["staff","Funcionamento"]]],["Cadastros",[["menu","Cardápio"],["accounts","Fiado"]]]];return `<div class="admin-layout"><aside class="admin-sidebar"><div class="admin-identity"><span class="eyebrow">Administração</span><b>Controle da Adega</b></div><div class="admin-alert-control">${notificationAction()}<button class="ghost" data-sync-usage>Uso da sincroniza&ccedil;&atilde;o</button></div>${groups.map(([label,items])=>`<div class="admin-nav-group"><small>${label}</small>${items.map(([key,text])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${text}</button>`).join("")}</div>`).join("")}<a class="admin-kitchen-link" href="/?area=cozinha" target="_blank" rel="noopener">Abrir cozinha ↗</a><button class="ghost admin-logout" data-admin-logout>Sair do Admin</button></aside><section class="admin-content">${content}</section></div>`}
 
 function saleGroup(item){const name=(item.name||"").toLocaleLowerCase();if(category(item)==="Comidas")return"Porções";if(/cerveja|heineken|skol|brahma|original|budweiser|lata|latão|long neck/.test(name))return"Cervejas";if(/copão|dose|drink|gin|vodka|whisky|whiskey|jack|cavalo/.test(name))return"Drinks";if(/água|agua|coca|guaraná|guarana|gelo|red bull|energético|energetico|zero álcool|zero alcool|refrigerante|suco/.test(name))return"Sem álcool";return"Bebidas"}
 function centerSaleCategory(){
@@ -596,6 +622,7 @@ function savedConsumptionRows(items,current){
 function simpleOperatingPage(){
   const cashOptions=entries(data.cash).sort((a,b)=>(b[1].opened_at||"").localeCompare(a[1].opened_at||"")),open=activeCash();
   if(!staffCashId||!data.cash[staffCashId])staffCashId=open?.[0]||cashOptions[0]?.[0]||"";
+  if(staffCashId&&data.cash[staffCashId]?.status!=="open"&&!historyScopeReady({cash_id:staffCashId}))return heading("Funcionamento")+'<p role="status">Carregando o caixa selecionado...</p>';
   const current=Boolean(open&&open[0]===staffCashId),costs=dayOperatingCosts(staffCashId);
   const selectedEvent=costs.events.find(([id])=>id===operatingEventId)||costs.events.find(([,event])=>event.simple_event)||costs.events[0],eventId=selectedEvent?.[0]||`operating-${staffCashId}`,event=selectedEvent?.[1],editable=current&&(!event||event.simple_event&&event.status!=="closed");
   const eventPicker=costs.events.length>1?`<label class="field">Evento<select data-operating-event>${costs.events.map(([id,item])=>`<option value="${id}" ${id===eventId?"selected":""}>${esc(item.name)}</option>`).join("")}</select></label>`:"";
@@ -908,7 +935,7 @@ openCashDialog=function(){openCashDialogWithoutAccountBalance();const form=modal
 const closeCashDialogWithoutAccountBalance=closeCashDialog;
 closeCashDialog=function(id){closeCashDialogWithoutAccountBalance(id);const form=modalBody.querySelector('[data-form="cash-close"]');if(!form)return;const live=cashLive(id,data.cash[id]),cashField=form.elements.counted_cash.closest('.field'),preview=modalBody.querySelector('.reconciliation-preview');preview?.insertAdjacentHTML('beforeend',`<div><span>Saldo inicial da conta</span><b>${money(live.openingAccount)}</b></div><div><span>Recebimentos na conta</span><b>${money(live.accountReceiptsExpected)}</b></div><div class="expected"><span>Saldo esperado na conta</span><b>${money(live.expectedAccount)}</b></div>`);cashField?.insertAdjacentHTML('afterend',`<div class="field"><label>Saldo atual conferido na conta</label><input name="counted_account" type="number" min="0" step=".01" required></div>`)}
 function voidSaleDialog(id){openModal(`<h2>Cancelar lançamento</h2><p class="notice">O lançamento será preservado para auditoria e deixará de entrar nos cálculos atuais. Caixas já fechados não serão alterados.</p><form data-form="sale-void"><input type="hidden" name="id" value="${id}"><div class="field"><label>Justificativa</label><textarea name="reason" required></textarea></div><button class="danger checkout-button" type="submit">Confirmar cancelamento</button></form>`)}
-function cashPage(){const open=activeCash(),closed=entries(data.cash).filter(([,cash])=>cash.status==="closed").sort((a,b)=>(b[1].closed_at||"").localeCompare(a[1].closed_at||""));let current;if(open){const[id,cash]=open,live=cashLive(id,cash);current=`<section class="cash-current"><div class="cash-session-head"><div><span class="eyebrow">Caixa em operação</span><h2>${esc(cash.opened_by||"Responsável não informado")}</h2><p class="muted">Aberto em ${date(cash.opened_at)}</p></div><div class="actions"><button data-cash-movement="supply" data-cash-id="${id}">+ Suprimento</button><button data-cash-movement="withdrawal" data-cash-id="${id}">− Sangria</button><button class="danger" data-close-cash="${id}">Fechar caixa</button></div></div><div class="kpi-grid cash-kpis"><article class="kpi-card featured"><span>Vendas do caixa</span><b>${money(live.total)}</b><small>${new Set(live.sales.map(([saleId,sale])=>sale.order_id||saleId)).size} pedidos</small></article><article class="kpi-card"><span>Dinheiro esperado</span><b>${money(live.expected)}</b><small>Na gaveta neste momento</small></article><article class="kpi-card"><span>Dinheiro a receber</span><b>${money(live.receivable)}</b><small>Vendas em fichas deste caixa</small></article><article class="kpi-card"><span>Dinheiro a pagar</span><b>${money(live.payable)}</b><small>Diárias pendentes da equipe</small></article></div><div class="dashboard-grid cash-detail-grid"><section class="dashboard-card"><div class="dashboard-card-head"><h3>Composição do dinheiro</h3></div><div class="cash-breakdown"><div><span>Troco inicial</span><b>${money(cash.opening_amount)}</b></div><div><span>Vendas em dinheiro</span><b>${money(live.payments.Dinheiro)}</b></div><div><span>Suprimentos</span><b class="positive-value">+ ${money(live.supplies)}</b></div><div><span>Sangrias</span><b class="negative-value">− ${money(live.withdrawals)}</b></div></div></section><section class="dashboard-card"><div class="dashboard-card-head"><h3>Movimentações</h3></div><div class="movement-list">${(cash.movements||[]).slice().reverse().map(movement=>`<div><span class="status ${movement.type==='supply'?'printed':'pending'}">${movement.type==='supply'?'Suprimento':'Sangria'}</span><div><b>${money(movement.amount)}</b><small>${esc(movement.responsible)} · ${esc(movement.note)} · ${date(movement.created_at)}</small></div></div>`).join("")||empty("Nenhuma movimentação neste caixa.")}</div></section></div></section>`}else current=`<div class="empty cash-empty"><h2>Nenhum caixa aberto</h2><p>Abra um caixa para começar a registrar vendas diretas.</p><button class="primary" data-open-cash>Abrir caixa</button></div>`;const archive=closed.map(([,cash])=>{const reconciled=cash.counted_cash!=null,difference=Number(cash.difference||0);return`<details class="cash-archive"><summary><div><b>${date(cash.opened_at)} até ${date(cash.closed_at)}</b><small>${esc(cash.opened_by||"Sem responsável")} → ${esc(cash.closed_by||"Sem responsável")}</small></div><span>${cash.sales_count||0} pedidos</span><b>${money(cash.total)}</b><span class="difference ${!reconciled?'legacy':difference===0?'ok':difference>0?'positive':'negative'}">${!reconciled?'Sem conferência':difference===0?'Conferido':`${difference>0?'+':''}${money(difference)}`}</span></summary><div class="cash-archive-body"><div class="operation-grid"><div><span>Inicial</span><b>${cash.opening_amount==null?'—':money(cash.opening_amount)}</b></div><div><span>Esperado</span><b>${cash.expected_cash==null?'—':money(cash.expected_cash)}</b></div><div><span>Contado</span><b>${cash.counted_cash==null?'—':money(cash.counted_cash)}</b></div></div><div class="cash-breakdown">${Object.entries(cash.payment_totals||{}).map(([method,total])=>`<div><span>${esc(method)}</span><b>${money(total)}</b></div>`).join("")}</div>${cash.closing_note?`<p class="notice">${esc(cash.closing_note)}</p>`:""}</div></details>`}).join("")||empty("Nenhum caixa fechado.");return heading("Controle de caixa",open?"":`<button class="primary" data-open-cash>Abrir caixa</button>`)+current+`<section class="cash-history"><div class="section-head"><div><span class="eyebrow">Arquivo</span><h2>Caixas anteriores</h2></div></div>${archive}</section>`}
+function cashPage(){const open=activeCash(),closed=entries(data.cash).filter(([,cash])=>cash.status==="closed").sort((a,b)=>(b[1].closed_at||"").localeCompare(a[1].closed_at||""));let current;if(open){const[id,cash]=open,live=cashLive(id,cash);current=`<section class="cash-current"><div class="cash-session-head"><div><span class="eyebrow">Caixa em operação</span><h2>${esc(cash.opened_by||"Responsável não informado")}</h2><p class="muted">Aberto em ${date(cash.opened_at)}</p></div><div class="actions"><button data-cash-movement="supply" data-cash-id="${id}">+ Suprimento</button><button data-cash-movement="withdrawal" data-cash-id="${id}">− Sangria</button><button class="danger" data-close-cash="${id}">Fechar caixa</button></div></div><div class="kpi-grid cash-kpis"><article class="kpi-card featured"><span>Vendas do caixa</span><b>${money(live.total)}</b><small>${new Set(live.sales.map(([saleId,sale])=>sale.order_id||saleId)).size} pedidos</small></article><article class="kpi-card"><span>Dinheiro esperado</span><b>${money(live.expected)}</b><small>Na gaveta neste momento</small></article><article class="kpi-card"><span>Dinheiro a receber</span><b>${money(live.receivable)}</b><small>Vendas em fichas deste caixa</small></article><article class="kpi-card"><span>Dinheiro a pagar</span><b>${money(live.payable)}</b><small>Diárias pendentes da equipe</small></article></div><div class="dashboard-grid cash-detail-grid"><section class="dashboard-card"><div class="dashboard-card-head"><h3>Composição do dinheiro</h3></div><div class="cash-breakdown"><div><span>Troco inicial</span><b>${money(cash.opening_amount)}</b></div><div><span>Vendas em dinheiro</span><b>${money(live.payments.Dinheiro)}</b></div><div><span>Suprimentos</span><b class="positive-value">+ ${money(live.supplies)}</b></div><div><span>Sangrias</span><b class="negative-value">− ${money(live.withdrawals)}</b></div></div></section><section class="dashboard-card"><div class="dashboard-card-head"><h3>Movimentações</h3></div><div class="movement-list">${(cash.movements||[]).slice().reverse().map(movement=>`<div><span class="status ${movement.type==='supply'?'printed':'pending'}">${movement.type==='supply'?'Suprimento':'Sangria'}</span><div><b>${money(movement.amount)}</b><small>${esc(movement.responsible)} · ${esc(movement.note)} · ${date(movement.created_at)}</small></div></div>`).join("")||empty("Nenhuma movimentação neste caixa.")}</div></section></div></section>`}else current=`<div class="empty cash-empty"><h2>Nenhum caixa aberto</h2><p>Abra um caixa para começar a registrar vendas diretas.</p><button class="primary" data-open-cash>Abrir caixa</button></div>`;const archive=closed.map(([,cash])=>{const reconciled=cash.counted_cash!=null,difference=Number(cash.difference||0);return`<details class="cash-archive"><summary><div><b>${date(cash.opened_at)} até ${date(cash.closed_at)}</b><small>${esc(cash.opened_by||"Sem responsável")} → ${esc(cash.closed_by||"Sem responsável")}</small></div><span>${cash.sales_count||0} pedidos</span><b>${money(cash.total)}</b><span class="difference ${!reconciled?'legacy':difference===0?'ok':difference>0?'positive':'negative'}">${!reconciled?'Sem conferência':difference===0?'Conferido':`${difference>0?'+':''}${money(difference)}`}</span></summary><div class="cash-archive-body">${cash.closing_summary?`<div class="operation-grid"><div><span>Custo no fechamento</span><b>${cash.closing_summary.known?money(cash.closing_summary.cost):"Pendente"}</b></div><div><span>Lucro no fechamento</span><b>${cash.closing_summary.known?money(cash.closing_summary.profit):"Pendente"}</b></div></div>`:""}<div class="operation-grid"><div><span>Inicial</span><b>${cash.opening_amount==null?'—':money(cash.opening_amount)}</b></div><div><span>Esperado</span><b>${cash.expected_cash==null?'—':money(cash.expected_cash)}</b></div><div><span>Contado</span><b>${cash.counted_cash==null?'—':money(cash.counted_cash)}</b></div></div><div class="cash-breakdown">${Object.entries(cash.payment_totals||{}).map(([method,total])=>`<div><span>${esc(method)}</span><b>${money(total)}</b></div>`).join("")}</div>${cash.closing_note?`<p class="notice">${esc(cash.closing_note)}</p>`:""}</div></details>`}).join("")||empty("Nenhum caixa fechado.");return heading("Controle de caixa",open?"":`<button class="primary" data-open-cash>Abrir caixa</button>`)+current+`<section class="cash-history"><div class="section-head"><div><span class="eyebrow">Arquivo</span><h2>Caixas anteriores</h2></div></div>${archive}</section>`}
 
 const cashPageWithPreviousCashHistory=cashPage;
 function groupMovementHistory(entriesList){
@@ -970,7 +997,7 @@ function unifiedCashPage(){
   }else{shell.querySelector(".section-head [data-open-cash]")?.remove()}
   const reports=document.createElement("details");reports.className="dashboard-card cash-reports";reports.open=cashReportsOpen;
   reports.innerHTML='<summary><div><b>Histórico e relatórios</b><small>Consultar períodos anteriores e exportar movimentações</small></div><span class="cash-history-toggle" aria-hidden="true"></span></summary><div class="cash-reports-body"></div>';
-  const reportBody=reports.querySelector(".cash-reports-body");reportBody.innerHTML=overviewPage();
+  const reportBody=reports.querySelector(".cash-reports-body");reportBody.innerHTML=cashReportsOpen?(reportHistoryReady()?overviewPage():'<p role="status">Carregando o per&iacute;odo selecionado...</p>'):'<p>Abra os relat&oacute;rios para consultar um per&iacute;odo.</p>';
   reportBody.querySelector(".section-head")?.remove();
   shell.append(reports);
   return shell.innerHTML;
@@ -1099,7 +1126,7 @@ document.addEventListener("click",async event=>{
     else if(el.dataset.closeHostedEvent)hostedEventCloseDialog(el.dataset.closeHostedEvent);
     else if(el.dataset.revokeDevice&&confirm("Revogar o acesso deste dispositivo?")){await mutate({action:"device.revoke",id:el.dataset.revokeDevice},true);draw()}
     else if(el.dataset.editAccount)accountFormDialog(el.dataset.editAccount);
-    else if(el.dataset.account)accountDialog(el.dataset.account);
+    else if(el.dataset.account){await loadHistory({kind:"account_payments",account_id:el.dataset.account},true);accountDialog(el.dataset.account)}
     else if(el.dataset.accountPayment)accountPaymentDialog(el.dataset.accountPayment);
     else if(el.dataset.convertTab)convertTabDialog(el.dataset.convertTab);
     else if(el.dataset.cancelAccountItem)cancelAccountItemDialog(el.dataset.cancelAccountItem,el.dataset.itemId,el.dataset.index);
@@ -1328,8 +1355,79 @@ document.addEventListener("toggle",event=>{
 },true);
 document.addEventListener("fullscreenchange",()=>{if(kitchenViewOpen())draw()});
 import { createStockEntry } from "./stock-entry.js";
+import { mergeState, mergeRecords, refreshDelay } from "./data-sync.js?v=incremental-20261020";
 const simpleStockEntry=createStockEntry({getStocks:()=>data.stock_items,openModal,closeModal,modalBody,mutate,draw,toast,esc,money,stockQuantity});
-async function start(){try{if(inviteToken)await claimInvite();if(token||deviceToken||originToken)await load();else draw()}catch(error){localStorage.removeItem("staffAccessToken");originToken="";module=null;page=null;draw();toast(error.message,true)}}
+const reportKinds=["sales","account_payments","staff_shifts","stock_events","hosted_events"];
+function reportQuery(){
+  const cashOptions=entries(data.cash).sort((a,b)=>(b[1].opened_at||"").localeCompare(a[1].opened_at||""));
+  const selected=periodSelection([],cashOptions,summaryFilter);
+  return selected.cashId?{cash_id:selected.cashId}:{from:selected.start.toISOString(),to:selected.end.toISOString()};
+}
+function historyKey(options){return JSON.stringify(options)}
+function historyScopeReady(query){return reportKinds.every(kind=>historyPages.get(historyKey({kind,...query}))?.complete)}
+function reportHistoryReady(){return historyScopeReady(reportQuery())}
+async function loadHistory(options,all=false,more=false){
+  const key=historyKey(options),identity=authIdentity(),generation=syncGeneration;
+  if(historyLoads.has(key))return historyLoads.get(key);
+  const state=historyPages.get(key)||{loaded:false,complete:false,next:null,error:null};
+  if(state.complete||state.loaded&&!all&&!more)return;
+  state.error=null;historyPages.set(key,state);
+  const task=(async()=>{
+    do{
+      const params=new URLSearchParams({...options,limit:"200",...(state.next?{before:state.next}:{})});
+      const response=await fetch(`/api/history?${params}`,{headers:syncHeaders()});
+      const result=await response.json();
+      if(identity!==authIdentity()||generation!==syncGeneration)return;
+      if(!response.ok)throw new Error(result.error||"Falha ao carregar o hist\u00f3rico.");
+      mergeRecords(data,result.kind,result.records,result.versions,syncVersions);
+      state.next=result.next;state.loaded=true;state.complete=!result.next;
+    }while(all&&!state.complete);
+  })();
+  historyLoads.set(key,task);
+  try{await task}catch(error){state.error=error;throw error}finally{if(historyLoads.get(key)===task)historyLoads.delete(key)}
+}
+function historyControls(options){
+  const key=historyKey(options),state=historyPages.get(key),loading=historyLoads.has(key);
+  if(state?.complete)return "";
+  return `<div class="history-load-more"><p class="muted">${state?.error?"N\u00e3o foi poss\u00edvel carregar o hist\u00f3rico.":loading?"Carregando hist\u00f3rico...":"O hist\u00f3rico \u00e9 carregado em p\u00e1ginas."}</p><button type="button" data-history-more="${esc(key)}" ${loading?"disabled":""}>${state?.error?"Tentar novamente":state?.loaded?"Carregar mais antigos":"Carregar hist\u00f3rico"}</button></div>`;
+}
+function ensureVisibleHistory(){
+  const requests=[];
+  const enqueue=(options,all=false)=>{
+    const key=historyKey(options),state=historyPages.get(key);
+    if(!historyLoads.has(key)&&!state?.error&&!(all?state?.complete:state?.loaded))requests.push(loadHistory(options,all));
+  };
+  if(module==="Admin"&&page==="cash"&&cashReportsOpen)for(const kind of reportKinds)enqueue({kind,...reportQuery()},true);
+  if(module==="Admin"&&page==="staff"&&staffCashId)for(const kind of reportKinds)enqueue({kind,cash_id:staffCashId},true);
+  if(page==="stock"&&stockHistoryOpen){enqueue({kind:"stock_movements"});const target=app.querySelector(".stock-history-list");if(target&&!target.querySelector(".history-load-more"))target.insertAdjacentHTML("beforeend",historyControls({kind:"stock_movements"}))}
+  if(page==="kitchen"&&kitchenHistoryOpen){
+    enqueue({kind:"kitchen"});const target=app.querySelector(".kitchen-history .list");if(target&&!target.querySelector(".history-load-more"))target.insertAdjacentHTML("beforeend",historyControls({kind:"kitchen"}));
+  }
+  if(requests.length)Promise.all(requests).then(()=>draw()).catch(error=>{draw();showSyncError(error);const target=app.querySelector(".cash-reports-body");if(target&&cashReportsOpen)target.innerHTML='<p role="alert">Falha ao carregar o per&iacute;odo. <button data-history-retry>Tentar novamente</button></p>';});
+}
+document.addEventListener("visibilitychange",()=>{
+  clearInterval(refreshTimer);
+  if(!document.hidden&&(token||deviceToken||originToken))load(true).then(()=>draw()).catch(error=>{showSyncError(error);draw()});
+});
+document.addEventListener("online",()=>{if(!document.hidden&&(token||deviceToken||originToken))load(true).then(()=>draw()).catch(showSyncError)});
+document.addEventListener("toggle",event=>{
+  if(!event.target.isConnected)return;
+  if(event.target.open&&event.target.matches?.(".cash-reports,.stock-history,.kitchen-history,.front-kitchen-history")){
+    if(event.target.matches(".cash-reports")){cashReportsOpen=true;if(!reportHistoryReady())event.target.querySelector(".cash-reports-body").innerHTML='<p role="status">Carregando o per&iacute;odo selecionado...</p>'}
+    if(event.target.matches(".stock-history"))stockHistoryOpen=true;
+    if(event.target.matches(".kitchen-history"))kitchenHistoryOpen=true;
+    if(event.target.matches(".front-kitchen-history"))frontKitchenHistoryOpen=true;
+    ensureVisibleHistory();
+  }
+},true);
+document.addEventListener("click",async event=>{
+  if(event.target.closest("[data-sync-usage]")){openModal(`<h2>Uso da sincroniza&ccedil;&atilde;o</h2><p>Desde ${new Date(syncUsage.started).toLocaleTimeString("pt-BR")} nesta aba:</p><p><b>${syncUsage.requests}</b> consultas de atualiza&ccedil;&atilde;o.</p><p><b>${syncUsage.measured?syncUsage.rows.toLocaleString("pt-BR"):"Indispon&iacute;vel"}</b> linhas lidas para atualizar os dados.</p><p class="muted">Este contador acompanha as atualiza&ccedil;&otilde;es desta aba. Hist&oacute;ricos, vendas, autentica&ccedil;&atilde;o e outros aparelhos tamb&eacute;m consomem recursos. O consumo total e a cota di&aacute;ria est&atilde;o no painel Cloudflare.</p>`);return}
+  const button=event.target.closest("[data-history-more],[data-history-retry]");if(!button)return;
+  if(button.hasAttribute("data-history-retry")){for(const state of historyPages.values())state.error=null;draw();return}
+  button.disabled=true;
+  try{await loadHistory(JSON.parse(button.dataset.historyMore),false,true);draw()}catch(error){showSyncError(error);button.disabled=false}
+});
+async function start(){try{if(inviteToken)await claimInvite();if(token||deviceToken||originToken)await load();else draw()}catch(error){draw();showSyncError(error);toast(error.message,true)}}
 start();
 
 document.addEventListener("input",event=>{
