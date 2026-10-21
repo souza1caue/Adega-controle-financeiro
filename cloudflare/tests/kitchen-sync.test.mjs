@@ -15,12 +15,12 @@ function device(f, role) {
 function client(f, headers, kitchen = false) {
   const alerts = [], draws = [];
   const context = {
-    data: {}, syncCursor: null, syncIdentity: '', syncGeneration: 0,
+    data: {}, moduleEntryGeneration:0,
     syncVersions: new Map(), historyLoads: new Map(), historyPages: new Map(),
     syncUsage: { requests: 0, rows: 0 }, frontIdentityToken: '', originToken: '',
     deviceToken: headers['x-device-access'], token: '', page: kitchen ? 'kitchen' : 'sales',
     authIdentity: () => context.deviceToken, mergeState,
-    document: { querySelector: () => null },
+    document: { querySelector: () => null },localStorage:{removeItem(){}},
     entries: value => Object.entries(value || {}),
     kitchenViewOpen: () => kitchen, readyAlertsOpen: () => !kitchen,
     knownKitchenOrderIds: null, knownFrontKitchenStatuses: null,
@@ -86,7 +86,7 @@ test('new kitchen device still receives old unfinished orders after reconnecting
     }
     const kitchen = client(f, device(f, 'kitchen'), true);
     await kitchen.load();
-    assert.deepEqual(Object.keys(kitchen.context.data.kitchen).sort(), ['pending', 'ready', 'started']);
+    assert.deepEqual(Object.keys(kitchen.context.data.kitchen).sort(), ['delivered', 'pending', 'ready', 'started']);
   } finally { f.sqlite.close(); }
 });
 
@@ -94,13 +94,13 @@ test('a delayed response body cannot overwrite a module opened after that reques
   const f=fixture();
   try{
     const front=client(f,device(f,'front'));
-    await front.load();const cursor=front.context.syncCursor;
+    await front.load();const previous=front.context.data;
     let finish;
     front.context.fetch=async()=>({ok:true,json:()=>new Promise(resolve=>{finish=resolve})});
     const pending=front.load();await new Promise(resolve=>setImmediate(resolve));
-    front.context.syncGeneration++;
-    finish({kitchen:{stale:{status:'ready'}},sync:{cursor:cursor+1,incremental:true,versions:{}}});
+    front.context.moduleEntryGeneration++;
+    finish({kitchen:{stale:{status:'ready'}}});
     await pending;
-    assert.equal(front.context.data.kitchen.stale,undefined);assert.equal(front.context.syncCursor,cursor);
+    assert.equal(front.context.data.kitchen.stale,undefined);assert.equal(front.context.data,previous);
   }finally{f.sqlite.close()}
 });

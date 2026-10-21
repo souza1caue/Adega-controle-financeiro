@@ -94,18 +94,13 @@ test('a slow previous selection cannot override the last operational tab selecte
   const kitchen = c.enterModule('Cozinha'), front = c.enterModule('Frente de caixa');
   pending[1](); await front; pending[0](); await kitchen;
   assert.equal(c.module, 'Frente de caixa'); assert.equal(c.deviceRole, 'front');
-  assert.deepEqual(h.draws, ['Frente de caixa']);
+  assert.deepEqual(h.draws, ['Cozinha','Frente de caixa']);
 });
 
-test('returning to a loaded module shows its cached data before background refresh completes',async()=>{
-  const h=screen(),c=h.context;
-  await c.enterModule('Frente de caixa');
-  await c.enterModule('Cozinha');
-  const before=h.draws.length;
-  let finish;
-  c.load=()=>new Promise(resolve=>{finish=resolve});
-  await c.enterModule('Frente de caixa');
-  assert.equal(h.draws.length,before+1);assert.equal(c.data.role,'front');
-  assert.equal(h.requests.length,2); // Reuse both signed accesses instead of issuing another one.
-  finish();
+test('module selection draws immediately before access and full state requests complete',async()=>{
+ const h=screen(),c=h.context;let finish;
+ c.fetch=()=>new Promise(resolve=>{finish=()=>resolve({ok:true,json:async()=>({role:'kitchen',access_token:'kitchen'})})});
+ const pending=c.enterModule('Cozinha');
+ assert.deepEqual(h.draws,['Cozinha']);assert.equal(h.reads.length,0);
+ finish();await pending;assert.deepEqual(h.reads,['Cozinha']);
 });

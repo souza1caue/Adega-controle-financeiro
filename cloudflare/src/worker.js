@@ -1,6 +1,6 @@
 import { closingSummary } from "./cash-summary.js";
-import { syncState, historyPage, allowedKinds } from "./state-sync.js";
-import { liveTicket, verifyLiveTicket, orderHub, publishChanges } from "./live-orders.js";
+import { historyPage, allowedKinds } from "./state-sync.js";
+import { liveTicket, verifyLiveTicket, orderHub } from "./live-orders.js";
 import { operationAccess, verifyOperationAccess } from "./operation-access.js";
 export { OrderLive } from "./live-orders.js";
 function paymentGroup(value) {
@@ -48,6 +48,19 @@ async function menuCostSnapshot(db, menuId, usage, multiplier = 1) {
   return { cost_mode: fixed ? "fixed" : "stock", unit_cost: fixed ? Number(item?.fixed_cost_price || 0) : usage.length ? usage.reduce((sum, part) => sum + Number(part.quantity || 0) * Number(part.unit_cost || 0), 0) / multiplier : Number(item?.cost_price || 0) };
 }
 
+
+async function state(db) {
+  const rows = await db.prepare("SELECT kind,id,data FROM records ORDER BY created_at").all();
+  const result = Object.fromEntries(KINDS.map((kind) => [kind, {}]));
+  result.stock_policy = { allow_sales_without_stock: ALLOW_SALES_WITHOUT_STOCK };
+  for (const row of rows.results) if (result[row.kind]) result[row.kind][row.id] = JSON.parse(row.data);
+  const balances = await db.prepare("SELECT id,quantity,updated_at FROM stock_balances").all();
+  for (const balance of balances.results) if (result.stock_items[balance.id]) {
+    result.stock_items[balance.id].stock_quantity = Number(balance.quantity);
+    result.stock_items[balance.id].stock_updated_at = balance.updated_at;
+  }
+  return result;
+}
 
 async function isAdmin(request, env) {
   const header = request.headers.get("authorization") || "";
@@ -1511,7 +1524,7 @@ export default {
         else if (!admin && !device) return reply({ error: "Faça login para acessar o sistema." }, 401);
         const kinds = allowedKinds(admin, device?.role === "kitchen");
         if (url.pathname === "/api/history") return reply(await historyPage(env.DB, url.searchParams, kinds));
-        const result = await syncState(env.DB, url.searchParams, kinds);
+        const result = await state(env.DB);
         const identityToken = request.headers.get("x-front-identity") || staffToken;
         result.front_identity = null;
         if (identityToken) {
@@ -1531,15 +1544,7 @@ export default {
       if (url.pathname === "/api/device/claim" && request.method === "POST") return await claimDevice(request, env);
       if (url.pathname === "/api/staff/claim" && request.method === "POST") return await claimStaffAccess(request, env);
       if (url.pathname === "/api/invoice/pdf" && request.method === "POST") return await extractPdfInvoice(request, env);
-      if (url.pathname === "/api/mutate" && request.method === "POST") {
-        const response = await mutate(request, env);
-        if (response.ok) {
-          // Never report a saved sale as failed just because notification delivery failed.
-          const notification = publishChanges(env).catch(error => console.error('Order notification:', error.message));
-          if (ctx?.waitUntil) ctx.waitUntil(notification); else await notification;
-        }
-        return response;
-      }
+      if (url.pathname === "/api/mutate" && request.method === "POST") return await mutate(request, env);
       if (url.pathname.startsWith("/api/")) return reply({ error: "Rota não encontrada." }, 404);
       return env.ASSETS.fetch(request);
     } catch (error) {

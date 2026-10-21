@@ -173,43 +173,24 @@ function notificationAction(context="front"){
   return`<button class="notification-enable ${Notification.permission==="denied"?'danger':''}" data-enable-notifications>${Notification.permission==="denied"?'Notificações bloqueadas':'Ativar notificações'}</button>`;
 }
 
-let syncCursor=null, syncIdentity="", loadPending=null, syncGeneration=0;
-const syncVersions=new Map(), historyLoads=new Map(), historyPages=new Map();
-const syncUsage={started:Date.now(),requests:0,rows:0,measured:false};
 const authIdentity=()=>JSON.stringify([token,deviceToken,originToken]);
-function syncHeaders(){return {...(frontIdentityToken?{"x-front-identity":frontIdentityToken}:{}),...(originToken?{"x-staff-access":originToken}:{}),...(deviceToken?{"x-device-access":deviceToken}:{}),...(token?{authorization:`Bearer ${token}`}:{})}}
-function startRefresh(render){return setInterval(()=>{if(!document.hidden&&!loadPending&&(typeof liveSync==="undefined"||liveSync.shouldPoll()))load(render).catch(error=>showSyncError(error))},refreshDelay(module,page))}
-function showSyncError(error){if(/exceeded.*(daily|free tier)|daily.*limit|1027/i.test(error.message||""))error=new Error("O limite de uso do Cloudflare foi atingido. Aguarde a renova\u00e7\u00e3o da cota ou confira o plano no painel Cloudflare.");const box=document.querySelector("#syncStatus");if(box){box.hidden=false;box.textContent=error.message||"Falha ao atualizar. Tentaremos novamente."}}
-async function load(render=true){
-  const identity=authIdentity();
-  const task=(loadPending||Promise.resolve()).catch(()=>{}).then(()=>{if(identity===authIdentity())return loadState(render)});
-  loadPending=task;
-  try{return await task}finally{if(loadPending===task)loadPending=null}
-}
+function showSyncError(error){const box=document.querySelector("#syncStatus");if(box){box.hidden=false;box.textContent=error.message||"Falha ao atualizar os dados."}}
+function startRefresh(render){return setInterval(()=>{if(token||deviceToken||originToken)load(render).catch(showSyncError)},3000)}
+async function load(render=true){return loadState(render)}
 async function loadState(render=true){
-  const identity=authIdentity();
-  if(identity!==syncIdentity){syncGeneration++;syncIdentity=identity;syncCursor=null;syncVersions.clear();historyLoads.clear();historyPages.clear()}
-  const requestGeneration=syncGeneration;
-  const previousCursor=syncCursor,previousIdentity=JSON.stringify(data.front_identity);
-
-  const response=await fetch(`/api/state${syncCursor===null?"":"?since="+syncCursor}`,{headers:{...(frontIdentityToken?{"x-front-identity":frontIdentityToken}:{}),...(originToken?{"x-staff-access":originToken}:{}),...(deviceToken?{"x-device-access":deviceToken}:{}),...(token?{authorization:`Bearer ${token}`}:{})}});
-  if(identity!==authIdentity()||requestGeneration!==syncGeneration)return;
-  if(!response.ok&&response.status!==401){const result=await response.json().catch(()=>({}));throw new Error(result.error||"Falha ao atualizar os dados. Tentaremos novamente.")}
-  if(response.status===401&&deviceToken.startsWith("operation.")&&["Frente de caixa","Cozinha"].includes(module)){if(!await openOperationalAccess(module==="Cozinha"?"kitchen":"front",moduleEntryGeneration,true))return;return loadState(render)}
+  const identity=authIdentity(),generation=moduleEntryGeneration;
+  const response=await fetch("/api/state",{headers:{...(frontIdentityToken?{"x-front-identity":frontIdentityToken}:{}),...(originToken?{"x-staff-access":originToken}:{}),...(deviceToken?{"x-device-access":deviceToken}:{}),...(token?{authorization:`Bearer ${token}`}:{})}});
+  if(identity!==authIdentity()||generation!==moduleEntryGeneration)return;
+  if(!response.ok&&response.status!==401){const result=await response.json().catch(()=>({}));throw new Error(result.error||"Falha ao atualizar os dados.")}
+  if(response.status===401&&deviceToken.startsWith("operation.")&&["Frente de caixa","Cozinha"].includes(module)){if(!await openOperationalAccess(module==="Cozinha"?"kitchen":"front",generation))return;return loadState(render)}
   if(!response.ok){
     frontIdentityToken="";localStorage.removeItem("frontIdentityToken");data.front_identity=null;
     if(originToken){originToken="";localStorage.removeItem("staffAccessToken");history.replaceState({},"",location.pathname);module=null;page=null;if(render){draw();toast("O caixa foi fechado. O acesso deste aparelho foi encerrado.",true)}}
     else if(token||deviceToken){token="";deviceToken="";deviceRole="";localStorage.removeItem("adminToken");sessionStorage.removeItem("adminToken");localStorage.removeItem("deviceAccessToken");localStorage.removeItem("deviceRole");module=null;page=null;if(render){draw();toast("Sua autorização expirou ou foi revogada.",true)}}
     throw new Error("Não foi possível carregar os dados.");
   }
-  const incoming=await response.json();
-  if(identity!==authIdentity()||requestGeneration!==syncGeneration)return;
-  syncUsage.requests++;if(incoming.sync?.usage?.available){syncUsage.measured=true;syncUsage.rows+=Number(incoming.sync.usage.data_rows_read||0)}
-  const changed=previousCursor!==incoming.sync?.cursor||previousIdentity!==JSON.stringify(incoming.front_identity)||!incoming.sync?.incremental;
-  if(previousCursor!==null&&!incoming.sync?.incremental){syncGeneration++;historyLoads.clear();historyPages.clear()}
-  const nextData=mergeState(data,incoming,syncVersions);
-  syncCursor=incoming.sync?.cursor??null;
-  const syncStatus=document.querySelector("#syncStatus");if(syncStatus)syncStatus.hidden=true;
+  const nextData=await response.json();
+  if(identity!==authIdentity()||generation!==moduleEntryGeneration)return;
   for(const account of Object.values(nextData.accounts||{}))delete account.blocked;
   if(kitchenViewOpen()){
     const nextIds=new Set(Object.keys(nextData.kitchen||{}));
@@ -227,10 +208,7 @@ async function loadState(render=true){
     originToken="";localStorage.removeItem("staffAccessToken");history.replaceState({},"",location.pathname);module=null;page=null;
     if(render)toast("O caixa foi fechado. O acesso deste aparelho foi encerrado.",true);
   }
-  if(incoming.sync?.more)return loadState(render);
-  if(typeof liveSync!=="undefined"){liveSync.synced();liveSync.ensure()}
-  if(typeof acknowledgeKitchen!=="undefined")acknowledgeKitchen();
-  if(render&&changed){
+  if(render){
     const choosingOverviewDate=page==="summary"&&document.activeElement?.matches?.(".overview-custom-range input[type='date']");
     if(!choosingOverviewDate)draw();
   }
@@ -260,51 +238,30 @@ function heading(title,action=""){return `<div class="section-head"><div><div cl
 function empty(text){return `<div class="empty">${esc(text)}</div>`}
 
 function portal(){
-  operationAccessCache.prefetch();
   nav.innerHTML="";
   app.innerHTML=`<section class="portal"><div class="eyebrow">Controle da Adega</div><h1>Escolha onde entrar</h1><p class="subtitle">Caixa e Cozinha pelo mesmo link, com pedidos atualizados em tempo real.</p><div class="module-grid">  ${[["Frente de caixa","Caixa","Vendas, comandas e acompanhamento de pedidos."],["Cozinha","Cozinha","Fila de preparo e pedidos prontos."],["Admin","Admin","Estoque, caixa, cardápio e relatórios. Acesso com senha."]].map(([name,label,description])=>`<button class="module-card" data-module="${name}"><span>ACESSAR</span><b>${label}</b><span>${description}</span></button>`).join("")}  </div></section>`;
 }
-let moduleEntryGeneration=0,moduleLoading=false;
-const moduleStateCache=new Map();
-async function openOperationalAccess(role,generation=moduleEntryGeneration,force=false){
-  const result=await operationAccessCache.get(role,force);
+let moduleEntryGeneration=0;
+async function openOperationalAccess(role,generation=moduleEntryGeneration){
+  const response=await fetch("/api/access",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({role})}),result=await response.json();
   if(generation!==moduleEntryGeneration)return false;
+  if(!response.ok)throw new Error(result.error||"Falha ao abrir esta area.");
   deviceToken=result.access_token;deviceRole=result.role;
-  localStorage.setItem("deviceAccessToken",deviceToken);localStorage.setItem("deviceRole",deviceRole);
-  return true;
+  localStorage.setItem("deviceAccessToken",deviceToken);localStorage.setItem("deviceRole",deviceRole);return true;
 }
 async function enterModule(name){
   if(!["Frente de caixa","Cozinha","Admin"].includes(name))return;
-  if(syncIdentity===authIdentity()&&syncCursor!==null)moduleStateCache.set(syncIdentity,{data,cursor:syncCursor,versions:new Map(syncVersions)});
   const generation=++moduleEntryGeneration;
-  liveSync.stop();
-  clearInterval(refreshTimer);loadPending=null;syncGeneration++;
   module=name;page=name==="Cozinha"?"kitchen":name==="Admin"?"cash":"sales";
-  moduleLoading=true;
-  setupNav([]);app.innerHTML='<div class="loading" role="status">Abrindo '+(name==="Frente de caixa"?"Caixa":name)+'…</div>';
-  originToken="";staffDeviceManaged=false;inviteToken="";
-  localStorage.removeItem("staffAccessToken");localStorage.removeItem("staffDeviceManaged");
-  deviceToken="";deviceRole="";localStorage.removeItem("deviceAccessToken");localStorage.removeItem("deviceRole");
+  originToken="";inviteToken="";staffDeviceManaged=false;
+  deviceToken="";deviceRole="";
+  for(const key of ["staffAccessToken","staffDeviceManaged","deviceAccessToken","deviceRole"])localStorage.removeItem(key);
   knownKitchenOrderIds=null;knownFrontKitchenStatuses=null;
+  draw();
   try{
     if(name!=="Admin"&&!await openOperationalAccess(name==="Cozinha"?"kitchen":"front",generation))return;
-    const identity=authIdentity(),cached=moduleStateCache.get(identity);
-    historyLoads.clear();historyPages.clear();
-    if(cached){
-      data=cached.data;syncIdentity=identity;syncCursor=cached.cursor;syncVersions.clear();
-      for(const[key,value]of cached.versions)syncVersions.set(key,value);
-      moduleLoading=false;
-      if(kitchenViewOpen())prepareKitchenAlerts();
-      if(readyAlertsOpen())prepareFrontAlerts();
-      draw();load(true).catch(showSyncError);return;
-    }
-    if(name!=="Admin"||token)await load(false);
-  }catch(error){if(generation===moduleEntryGeneration){moduleLoading=false;module=null;page=null;draw()}throw error}
-  if(generation!==moduleEntryGeneration)return;
-  moduleLoading=false;
-  if(kitchenViewOpen())prepareKitchenAlerts();
-  if(readyAlertsOpen())prepareFrontAlerts();
-  draw();
+    if(name!=="Admin"||token)await load(true);
+  }catch(error){if(generation===moduleEntryGeneration)showSyncError(error);throw error}
 }
 function setupNav(items){nav.innerHTML=fiadoLabels(items.map(([key,label])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${label}</button>`).join("")+'<button data-home class="ghost">Módulos</button>')}
 function frontIdentityBar(){
@@ -317,8 +274,6 @@ function sharedStaffAccessDialog(accessToken){
   openModal(`<h2>QR Code da equipe</h2><p>Todos os funcionários podem usar este mesmo QR Code. Cada um digita o próprio nome no seu aparelho.</p><img class="staff-qr" src="${qr}" alt="QR Code geral da equipe"><label class="field">Link de acesso<input value="${esc(url)}" readonly></label><p class="muted">O acesso e os nomes confirmados valem até o fechamento deste caixa.</p>`);
 }
 function draw(){
-  if(typeof moduleLoading!=="undefined"&&moduleLoading){setupNav([]);app.innerHTML='<div class="loading" role="status">Abrindo módulo…</div>';return}
-  liveSync.ensure();
   const frontNameInput=document.activeElement?.matches?.("[data-front-name]")?document.activeElement:null;
   const frontNameDraft=frontNameInput?{value:frontNameInput.value,start:frontNameInput.selectionStart,end:frontNameInput.selectionEnd}:null;
   const stockSearchInput=page==="stock"&&document.activeElement?.matches?.("[data-stock-search]")?document.activeElement:null;
@@ -358,10 +313,9 @@ function draw(){
   if(stockSearchSelection){const input=app.querySelector("[data-stock-search]");if(input){input.focus({preventScroll:true});input.setSelectionRange(...stockSearchSelection)}}
   if(stockHistorySearchSelection){const input=app.querySelector("[data-stock-history-search]");if(input){input.focus({preventScroll:true});input.setSelectionRange(...stockHistorySearchSelection)}}
   if(cashHistorySearchSelection){const input=app.querySelector("[data-cash-history-search]");if(input){input.focus({preventScroll:true});input.setSelectionRange(...cashHistorySearchSelection)}}
-  ensureVisibleHistory();
 }
 
-function adminShell(content){const groups=[["Operação",[["cash","Caixa"],["stock","Estoque"],["staff","Funcionamento"]]],["Cadastros",[["menu","Cardápio"],["accounts","Fiado"]]]];return `<div class="admin-layout"><aside class="admin-sidebar"><div class="admin-identity"><span class="eyebrow">Administração</span><b>Controle da Adega</b></div><div class="admin-alert-control">${notificationAction()}<button class="ghost" data-sync-usage>Uso da sincroniza&ccedil;&atilde;o</button></div>${groups.map(([label,items])=>`<div class="admin-nav-group"><small>${label}</small>${items.map(([key,text])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${text}</button>`).join("")}</div>`).join("")}<a class="admin-kitchen-link" href="/?area=cozinha" target="_blank" rel="noopener">Abrir cozinha ↗</a><button class="ghost admin-logout" data-admin-logout>Sair do Admin</button></aside><section class="admin-content">${content}</section></div>`}
+function adminShell(content){const groups=[["Operação",[["cash","Caixa"],["stock","Estoque"],["staff","Funcionamento"]]],["Cadastros",[["menu","Cardápio"],["accounts","Fiado"]]]];return `<div class="admin-layout"><aside class="admin-sidebar"><div class="admin-identity"><span class="eyebrow">Administração</span><b>Controle da Adega</b></div><div class="admin-alert-control">${notificationAction()}</div>${groups.map(([label,items])=>`<div class="admin-nav-group"><small>${label}</small>${items.map(([key,text])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${text}</button>`).join("")}</div>`).join("")}<a class="admin-kitchen-link" href="/?area=cozinha" target="_blank" rel="noopener">Abrir cozinha ↗</a><button class="ghost admin-logout" data-admin-logout>Sair do Admin</button></aside><section class="admin-content">${content}</section></div>`}
 
 function saleGroup(item){const name=(item.name||"").toLocaleLowerCase();if(category(item)==="Comidas")return"Porções";if(/cerveja|heineken|skol|brahma|original|budweiser|lata|latão|long neck/.test(name))return"Cervejas";if(/copão|dose|drink|gin|vodka|whisky|whiskey|jack|cavalo/.test(name))return"Drinks";if(/água|agua|coca|guaraná|guarana|gelo|red bull|energético|energetico|zero álcool|zero alcool|refrigerante|suco/.test(name))return"Sem álcool";return"Bebidas"}
 function centerSaleCategory(){
@@ -453,7 +407,7 @@ function cancelAccountItemDialog(id,itemId,index){const a=data.accounts[id],item
 function kitchenRows(statuses,controls=true){const list=entries(data.kitchen).filter(([,o])=>statuses.includes(o.status||"pending")).sort((a,b)=>(a[1].created_at||"").localeCompare(b[1].created_at||""));return list.map(([id,o])=>{const items=orderItems(o),itemList=items.map(item=>`<div class="kitchen-order-item"><b>${Number(item.quantity)}x ${esc(item.description)}</b>${item.note?`<p class="kitchen-order-note"><span>OBSERVA&Ccedil;&Atilde;O</span>${esc(item.note)}</p>`:""}</div>`).join("");const status=o.status||"pending";return`<div class="row kitchen-order-card"><div><div class="kitchen-order-items">${itemList||`<div class="kitchen-order-item"><b>${esc(o.description)}</b></div>`}</div>${o.note?`<p class="kitchen-order-note general"><span>OBSERVA&Ccedil;&Atilde;O GERAL</span>${esc(o.note)}</p>`:""}<div class="kitchen-order-meta">${esc(o.customer_name||"Sem cliente")} · ${esc(o.origin||"Balcão")}</div></div><span class="status ${status}">${statusName[status]}</span><span>${date(o.created_at)}</span>${controls?`<div class="actions">${status==="pending"?`<button data-kitchen="${id}" data-status="started">Iniciar</button>`:""}${status==="started"?`<button class="primary" data-kitchen="${id}" data-status="ready">Finalizar</button>`:""}${status==="ready"?`<button class="primary" data-kitchen="${id}" data-status="delivered">Confirmar entrega</button>`:""}</div>`:""}</div>`}).join("")||empty("Nenhum pedido nesta etapa.")}
 function kitchenPage(){const fullscreen=Boolean(document.fullscreenElement),actions=`<div class="kitchen-heading-actions">${notificationAction("kitchen")}<button class="${fullscreen?'nav-active':''}" data-kitchen-fullscreen>${fullscreen?'Sair da tela cheia':'Tela cheia'}</button></div>`;return heading("Cozinha",actions)+`<div class="kitchen-alert-hint"><b>Alertas de novos pedidos</b><span>Mantenha esta tela aberta e clique em “Ativar alertas da cozinha” uma vez neste computador.</span></div><div class="kitchen-board"><section class="kitchen-column pending"><header><span class="eyebrow">Aguardando</span><h2>Pendentes</h2></header><div class="list">${kitchenRows(["pending"])}</div></section><section class="kitchen-column started"><header><span class="eyebrow">Produção</span><h2>Em preparo</h2></header><div class="list">${kitchenRows(["started"])}</div></section><section class="kitchen-column ready"><header><span class="eyebrow">Finalizado</span><h2>Prontos</h2><small>Aguardando retirada</small></header><div class="list">${kitchenRows(["ready"],false)}</div></section></div><details class="kitchen-history" ${kitchenHistoryOpen?'open':''}><summary>Histórico de entregas</summary><div class="list">${kitchenRows(["delivered","done"],false)}</div></details>`}
 function orderWait(order){const created=new Date(order.created_at).getTime();return Number.isFinite(created)?Math.max(0,Math.floor((Date.now()-created)/60000)):0}
-function frontKitchenCard(id,order){const status=order.status||"pending",delivered=["delivered","done"].includes(status),wait=orderWait(order),urgency=delivered?"normal":wait>=30?"late":wait>=15?"warning":"normal",items=orderItems(order),count=items.reduce((sum,item)=>sum+Number(item.quantity||0),0),content=`<div class="front-order-items">${items.map(item=>`<div><b>${Number(item.quantity)}x ${esc(item.description)}</b>${item.note?`<small>${esc(item.note)}</small>`:""}</div>`).join("")}${order.note?`<p class="front-order-note">${esc(order.note)}</p>`:""}</div>`,audit=`<small class="order-audit">Pedido por: ${esc(order.created_by||"Caixa principal")}${order.delivered_by?` · Entregue por: ${esc(order.delivered_by)}`:""}</small>`,timing=delivered?`Entregue às ${time(order.delivered_at)}`:`${wait} min`;return`<article class="front-order-card ${urgency}"><div class="front-order-head"><div><span class="eyebrow">#${esc(id.slice(0,6).toUpperCase())} · ${count} ${count===1?'item':'itens'}</span><h3>${esc(order.customer_name||"Cliente não informado")}</h3></div><div><span class="status ${status}">${statusName[status]}</span><b>${timing}</b></div></div>${audit}${kitchenReceipt(order)}${content}${status==="ready"?`<button class="primary front-deliver" data-kitchen="${id}" data-status="delivered">Confirmar entrega</button>`:""}</article>`}
+function frontKitchenCard(id,order){const status=order.status||"pending",delivered=["delivered","done"].includes(status),wait=orderWait(order),urgency=delivered?"normal":wait>=30?"late":wait>=15?"warning":"normal",items=orderItems(order),count=items.reduce((sum,item)=>sum+Number(item.quantity||0),0),content=`<div class="front-order-items">${items.map(item=>`<div><b>${Number(item.quantity)}x ${esc(item.description)}</b>${item.note?`<small>${esc(item.note)}</small>`:""}</div>`).join("")}${order.note?`<p class="front-order-note">${esc(order.note)}</p>`:""}</div>`,audit=`<small class="order-audit">Pedido por: ${esc(order.created_by||"Caixa principal")}${order.delivered_by?` · Entregue por: ${esc(order.delivered_by)}`:""}</small>`,timing=delivered?`Entregue às ${time(order.delivered_at)}`:`${wait} min`;return`<article class="front-order-card ${urgency}"><div class="front-order-head"><div><span class="eyebrow">#${esc(id.slice(0,6).toUpperCase())} · ${count} ${count===1?'item':'itens'}</span><h3>${esc(order.customer_name||"Cliente não informado")}</h3></div><div><span class="status ${status}">${statusName[status]}</span><b>${timing}</b></div></div>${audit}${content}${status==="ready"?`<button class="primary front-deliver" data-kitchen="${id}" data-status="delivered">Confirmar entrega</button>`:""}</article>`}
 function frontKitchenPage(){const today=new Date().toISOString().slice(0,10),active=entries(data.kitchen).filter(([,o])=>!["delivered","done"].includes(o.status||"pending")).sort((a,b)=>(a[1].created_at||"").localeCompare(b[1].created_at||"")),ready=active.filter(([,o])=>(o.status||"pending")==="ready"),preparing=active.filter(([,o])=>["pending","started"].includes(o.status||"pending")),shown=frontKitchenFilter==="preparing"?preparing:ready,history=entries(data.kitchen).filter(([,o])=>["delivered","done"].includes(o.status)&&String(o.delivered_at||o.created_at||"").slice(0,10)===today).sort((a,b)=>(b[1].delivered_at||b[1].created_at||"").localeCompare(a[1].delivered_at||a[1].created_at||"")).slice(0,10);return heading("Pedidos da cozinha")+`<div class="front-kitchen-summary"><button type="button" data-front-kitchen-filter="ready" class="${frontKitchenFilter==="ready"&&"active"}" aria-pressed="${frontKitchenFilter==="ready"}"><span>Prontos</span><b>${ready.length}</b></button><button type="button" data-front-kitchen-filter="preparing" class="${frontKitchenFilter==="preparing"&&"active"}" aria-pressed="${frontKitchenFilter==="preparing"}"><span>Em preparo</span><b>${preparing.length}</b></button></div><div class="front-order-list">${shown.map(([id,o])=>frontKitchenCard(id,o)).join("")||empty(frontKitchenFilter==="ready"?"Nenhum pedido pronto para entrega.":"Nenhum pedido nesta etapa.")}</div><details class="front-kitchen-history" ${frontKitchenHistoryOpen?'open':''}><summary>Histórico de entregas de hoje</summary><div class="list">${history.map(([id,o])=>frontKitchenCard(id,o)).join("")||empty("Nenhuma entrega registrada hoje.")}</div></details>`}
 function printOrders(status){return entries(data.kitchen).filter(([,o])=>o.print_status===status).sort((a,b)=>(a[1].created_at||"").localeCompare(b[1].created_at||""))}
 function orderItems(o){if(Array.isArray(o.items)&&o.items.length){const foods=o.items.filter(item=>item.category==="Comidas");return foods.length?foods:o.items.filter(item=>!item.category)}return[{description:o.description,quantity:o.quantity,price:o.price}]}
@@ -669,7 +623,6 @@ function savedConsumptionRows(items,current){
 function simpleOperatingPage(){
   const cashOptions=entries(data.cash).sort((a,b)=>(b[1].opened_at||"").localeCompare(a[1].opened_at||"")),open=activeCash();
   if(!staffCashId||!data.cash[staffCashId])staffCashId=open?.[0]||cashOptions[0]?.[0]||"";
-  if(staffCashId&&data.cash[staffCashId]?.status!=="open"&&!historyScopeReady({cash_id:staffCashId}))return heading("Funcionamento")+'<p role="status">Carregando o caixa selecionado...</p>';
   const current=Boolean(open&&open[0]===staffCashId),costs=dayOperatingCosts(staffCashId);
   const selectedEvent=costs.events.find(([id])=>id===operatingEventId)||costs.events.find(([,event])=>event.simple_event)||costs.events[0],eventId=selectedEvent?.[0]||`operating-${staffCashId}`,event=selectedEvent?.[1],editable=current&&(!event||event.simple_event&&event.status!=="closed");
   const eventPicker=costs.events.length>1?`<label class="field">Evento<select data-operating-event>${costs.events.map(([id,item])=>`<option value="${id}" ${id===eventId?"selected":""}>${esc(item.name)}</option>`).join("")}</select></label>`:"";
@@ -982,7 +935,7 @@ openCashDialog=function(){openCashDialogWithoutAccountBalance();const form=modal
 const closeCashDialogWithoutAccountBalance=closeCashDialog;
 closeCashDialog=function(id){closeCashDialogWithoutAccountBalance(id);const form=modalBody.querySelector('[data-form="cash-close"]');if(!form)return;const live=cashLive(id,data.cash[id]),cashField=form.elements.counted_cash.closest('.field'),preview=modalBody.querySelector('.reconciliation-preview');preview?.insertAdjacentHTML('beforeend',`<div><span>Saldo inicial da conta</span><b>${money(live.openingAccount)}</b></div><div><span>Recebimentos na conta</span><b>${money(live.accountReceiptsExpected)}</b></div><div class="expected"><span>Saldo esperado na conta</span><b>${money(live.expectedAccount)}</b></div>`);cashField?.insertAdjacentHTML('afterend',`<div class="field"><label>Saldo atual conferido na conta</label><input name="counted_account" type="number" min="0" step=".01" required></div>`)}
 function voidSaleDialog(id){openModal(`<h2>Cancelar lançamento</h2><p class="notice">O lançamento será preservado para auditoria e deixará de entrar nos cálculos atuais. Caixas já fechados não serão alterados.</p><form data-form="sale-void"><input type="hidden" name="id" value="${id}"><div class="field"><label>Justificativa</label><textarea name="reason" required></textarea></div><button class="danger checkout-button" type="submit">Confirmar cancelamento</button></form>`)}
-function cashPage(){const open=activeCash(),closed=entries(data.cash).filter(([,cash])=>cash.status==="closed").sort((a,b)=>(b[1].closed_at||"").localeCompare(a[1].closed_at||""));let current;if(open){const[id,cash]=open,live=cashLive(id,cash);current=`<section class="cash-current"><div class="cash-session-head"><div><span class="eyebrow">Caixa em operação</span><h2>${esc(cash.opened_by||"Responsável não informado")}</h2><p class="muted">Aberto em ${date(cash.opened_at)}</p></div><div class="actions"><button data-cash-movement="supply" data-cash-id="${id}">+ Suprimento</button><button data-cash-movement="withdrawal" data-cash-id="${id}">− Sangria</button><button class="danger" data-close-cash="${id}">Fechar caixa</button></div></div><div class="kpi-grid cash-kpis"><article class="kpi-card featured"><span>Vendas do caixa</span><b>${money(live.total)}</b><small>${new Set(live.sales.map(([saleId,sale])=>sale.order_id||saleId)).size} pedidos</small></article><article class="kpi-card"><span>Dinheiro esperado</span><b>${money(live.expected)}</b><small>Na gaveta neste momento</small></article><article class="kpi-card"><span>Dinheiro a receber</span><b>${money(live.receivable)}</b><small>Vendas em fichas deste caixa</small></article><article class="kpi-card"><span>Dinheiro a pagar</span><b>${money(live.payable)}</b><small>Diárias pendentes da equipe</small></article></div><div class="dashboard-grid cash-detail-grid"><section class="dashboard-card"><div class="dashboard-card-head"><h3>Composição do dinheiro</h3></div><div class="cash-breakdown"><div><span>Troco inicial</span><b>${money(cash.opening_amount)}</b></div><div><span>Vendas em dinheiro</span><b>${money(live.payments.Dinheiro)}</b></div><div><span>Suprimentos</span><b class="positive-value">+ ${money(live.supplies)}</b></div><div><span>Sangrias</span><b class="negative-value">− ${money(live.withdrawals)}</b></div></div></section><section class="dashboard-card"><div class="dashboard-card-head"><h3>Movimentações</h3></div><div class="movement-list">${(cash.movements||[]).slice().reverse().map(movement=>`<div><span class="status ${movement.type==='supply'?'printed':'pending'}">${movement.type==='supply'?'Suprimento':'Sangria'}</span><div><b>${money(movement.amount)}</b><small>${esc(movement.responsible)} · ${esc(movement.note)} · ${date(movement.created_at)}</small></div></div>`).join("")||empty("Nenhuma movimentação neste caixa.")}</div></section></div></section>`}else current=`<div class="empty cash-empty"><h2>Nenhum caixa aberto</h2><p>Abra um caixa para começar a registrar vendas diretas.</p><button class="primary" data-open-cash>Abrir caixa</button></div>`;const archive=closed.map(([,cash])=>{const reconciled=cash.counted_cash!=null,difference=Number(cash.difference||0);return`<details class="cash-archive"><summary><div><b>${date(cash.opened_at)} até ${date(cash.closed_at)}</b><small>${esc(cash.opened_by||"Sem responsável")} → ${esc(cash.closed_by||"Sem responsável")}</small></div><span>${cash.sales_count||0} pedidos</span><b>${money(cash.total)}</b><span class="difference ${!reconciled?'legacy':difference===0?'ok':difference>0?'positive':'negative'}">${!reconciled?'Sem conferência':difference===0?'Conferido':`${difference>0?'+':''}${money(difference)}`}</span></summary><div class="cash-archive-body">${cash.closing_summary?`<div class="operation-grid"><div><span>Custo no fechamento</span><b>${cash.closing_summary.known?money(cash.closing_summary.cost):"Pendente"}</b></div><div><span>Lucro no fechamento</span><b>${cash.closing_summary.known?money(cash.closing_summary.profit):"Pendente"}</b></div></div>`:""}<div class="operation-grid"><div><span>Inicial</span><b>${cash.opening_amount==null?'—':money(cash.opening_amount)}</b></div><div><span>Esperado</span><b>${cash.expected_cash==null?'—':money(cash.expected_cash)}</b></div><div><span>Contado</span><b>${cash.counted_cash==null?'—':money(cash.counted_cash)}</b></div></div><div class="cash-breakdown">${Object.entries(cash.payment_totals||{}).map(([method,total])=>`<div><span>${esc(method)}</span><b>${money(total)}</b></div>`).join("")}</div>${cash.closing_note?`<p class="notice">${esc(cash.closing_note)}</p>`:""}</div></details>`}).join("")||empty("Nenhum caixa fechado.");return heading("Controle de caixa",open?"":`<button class="primary" data-open-cash>Abrir caixa</button>`)+current+`<section class="cash-history"><div class="section-head"><div><span class="eyebrow">Arquivo</span><h2>Caixas anteriores</h2></div></div>${archive}</section>`}
+function cashPage(){const open=activeCash(),closed=entries(data.cash).filter(([,cash])=>cash.status==="closed").sort((a,b)=>(b[1].closed_at||"").localeCompare(a[1].closed_at||""));let current;if(open){const[id,cash]=open,live=cashLive(id,cash);current=`<section class="cash-current"><div class="cash-session-head"><div><span class="eyebrow">Caixa em operação</span><h2>${esc(cash.opened_by||"Responsável não informado")}</h2><p class="muted">Aberto em ${date(cash.opened_at)}</p></div><div class="actions"><button data-cash-movement="supply" data-cash-id="${id}">+ Suprimento</button><button data-cash-movement="withdrawal" data-cash-id="${id}">− Sangria</button><button class="danger" data-close-cash="${id}">Fechar caixa</button></div></div><div class="kpi-grid cash-kpis"><article class="kpi-card featured"><span>Vendas do caixa</span><b>${money(live.total)}</b><small>${new Set(live.sales.map(([saleId,sale])=>sale.order_id||saleId)).size} pedidos</small></article><article class="kpi-card"><span>Dinheiro esperado</span><b>${money(live.expected)}</b><small>Na gaveta neste momento</small></article><article class="kpi-card"><span>Dinheiro a receber</span><b>${money(live.receivable)}</b><small>Vendas em fichas deste caixa</small></article><article class="kpi-card"><span>Dinheiro a pagar</span><b>${money(live.payable)}</b><small>Diárias pendentes da equipe</small></article></div><div class="dashboard-grid cash-detail-grid"><section class="dashboard-card"><div class="dashboard-card-head"><h3>Composição do dinheiro</h3></div><div class="cash-breakdown"><div><span>Troco inicial</span><b>${money(cash.opening_amount)}</b></div><div><span>Vendas em dinheiro</span><b>${money(live.payments.Dinheiro)}</b></div><div><span>Suprimentos</span><b class="positive-value">+ ${money(live.supplies)}</b></div><div><span>Sangrias</span><b class="negative-value">− ${money(live.withdrawals)}</b></div></div></section><section class="dashboard-card"><div class="dashboard-card-head"><h3>Movimentações</h3></div><div class="movement-list">${(cash.movements||[]).slice().reverse().map(movement=>`<div><span class="status ${movement.type==='supply'?'printed':'pending'}">${movement.type==='supply'?'Suprimento':'Sangria'}</span><div><b>${money(movement.amount)}</b><small>${esc(movement.responsible)} · ${esc(movement.note)} · ${date(movement.created_at)}</small></div></div>`).join("")||empty("Nenhuma movimentação neste caixa.")}</div></section></div></section>`}else current=`<div class="empty cash-empty"><h2>Nenhum caixa aberto</h2><p>Abra um caixa para começar a registrar vendas diretas.</p><button class="primary" data-open-cash>Abrir caixa</button></div>`;const archive=closed.map(([,cash])=>{const reconciled=cash.counted_cash!=null,difference=Number(cash.difference||0);return`<details class="cash-archive"><summary><div><b>${date(cash.opened_at)} até ${date(cash.closed_at)}</b><small>${esc(cash.opened_by||"Sem responsável")} → ${esc(cash.closed_by||"Sem responsável")}</small></div><span>${cash.sales_count||0} pedidos</span><b>${money(cash.total)}</b><span class="difference ${!reconciled?'legacy':difference===0?'ok':difference>0?'positive':'negative'}">${!reconciled?'Sem conferência':difference===0?'Conferido':`${difference>0?'+':''}${money(difference)}`}</span></summary><div class="cash-archive-body"><div class="operation-grid"><div><span>Inicial</span><b>${cash.opening_amount==null?'—':money(cash.opening_amount)}</b></div><div><span>Esperado</span><b>${cash.expected_cash==null?'—':money(cash.expected_cash)}</b></div><div><span>Contado</span><b>${cash.counted_cash==null?'—':money(cash.counted_cash)}</b></div></div><div class="cash-breakdown">${Object.entries(cash.payment_totals||{}).map(([method,total])=>`<div><span>${esc(method)}</span><b>${money(total)}</b></div>`).join("")}</div>${cash.closing_note?`<p class="notice">${esc(cash.closing_note)}</p>`:""}</div></details>`}).join("")||empty("Nenhum caixa fechado.");return heading("Controle de caixa",open?"":`<button class="primary" data-open-cash>Abrir caixa</button>`)+current+`<section class="cash-history"><div class="section-head"><div><span class="eyebrow">Arquivo</span><h2>Caixas anteriores</h2></div></div>${archive}</section>`}
 
 const cashPageWithPreviousCashHistory=cashPage;
 function groupMovementHistory(entriesList){
@@ -1044,7 +997,7 @@ function unifiedCashPage(){
   }else{shell.querySelector(".section-head [data-open-cash]")?.remove()}
   const reports=document.createElement("details");reports.className="dashboard-card cash-reports";reports.open=cashReportsOpen;
   reports.innerHTML='<summary><div><b>Histórico e relatórios</b><small>Consultar períodos anteriores e exportar movimentações</small></div><span class="cash-history-toggle" aria-hidden="true"></span></summary><div class="cash-reports-body"></div>';
-  const reportBody=reports.querySelector(".cash-reports-body");reportBody.innerHTML=cashReportsOpen?(reportHistoryReady()?overviewPage():'<p role="status">Carregando o per&iacute;odo selecionado...</p>'):'<p>Abra os relat&oacute;rios para consultar um per&iacute;odo.</p>';
+  const reportBody=reports.querySelector(".cash-reports-body");reportBody.innerHTML=overviewPage();
   reportBody.querySelector(".section-head")?.remove();
   shell.append(reports);
   return shell.innerHTML;
@@ -1127,7 +1080,7 @@ document.addEventListener("click",async event=>{
     else if(el.hasAttribute("data-admin-logout")){token="";localStorage.removeItem("adminToken");sessionStorage.removeItem("adminToken");module=null;page=null;draw()}
     else if(el.hasAttribute("data-device-logout")){deviceToken="";deviceRole="";localStorage.removeItem("deviceAccessToken");localStorage.removeItem("deviceRole");module=null;page=null;draw()}
     else if(el.hasAttribute("data-owner-login")){staffDeviceManaged=false;localStorage.removeItem("staffDeviceManaged");module=null;page=null;draw()}
-    else if(el.hasAttribute("data-home")||el.id==="homeBtn"){moduleEntryGeneration++;moduleLoading=false;directKitchen=false;history.replaceState({},"",location.pathname);module=null;page=null;knownKitchenOrderIds=null;knownFrontKitchenStatuses=null;draw()}
+    else if(el.hasAttribute("data-home")||el.id==="homeBtn"){moduleEntryGeneration++;directKitchen=false;history.replaceState({},"",location.pathname);module=null;page=null;knownKitchenOrderIds=null;knownFrontKitchenStatuses=null;draw()}
     else if(el.hasAttribute("data-close"))closeModal();
     else if(el.dataset.cartAdd)changeCart(el.dataset.cartAdd,1);
     else if(el.dataset.cartMinus)changeCart(el.dataset.cartMinus,-1);
@@ -1173,7 +1126,7 @@ document.addEventListener("click",async event=>{
     else if(el.dataset.closeHostedEvent)hostedEventCloseDialog(el.dataset.closeHostedEvent);
     else if(el.dataset.revokeDevice&&confirm("Revogar o acesso deste dispositivo?")){await mutate({action:"device.revoke",id:el.dataset.revokeDevice},true);draw()}
     else if(el.dataset.editAccount)accountFormDialog(el.dataset.editAccount);
-    else if(el.dataset.account){await loadHistory({kind:"account_payments",account_id:el.dataset.account},true);accountDialog(el.dataset.account)}
+    else if(el.dataset.account)accountDialog(el.dataset.account);
     else if(el.dataset.accountPayment)accountPaymentDialog(el.dataset.accountPayment);
     else if(el.dataset.convertTab)convertTabDialog(el.dataset.convertTab);
     else if(el.dataset.cancelAccountItem)cancelAccountItemDialog(el.dataset.cancelAccountItem,el.dataset.itemId,el.dataset.index);
@@ -1335,7 +1288,7 @@ document.addEventListener("submit",async event=>{
       }
 
       if(checkoutSubmitting)return;checkoutSubmitting=true;const submit=form.querySelector("button[type='submit']"),total=checkoutChargedTotal(form),quantity=cartQuantity(),hasFood=cartLines().some(([id])=>category(data.menu[id])==="Comidas"),paymentLabel=systemLabel(fd.payment_method);submit.disabled=true;submit.textContent="Finalizando...";
-      try{const newOwner=fd.account_id==="__new_owner",frontTab=fd.destination==="account"&&module==="Frente de caixa",result=await mutate({action:"sale.checkout",items:cartLines().map(([menu_id,line])=>({menu_id,quantity:line.quantity,note:line.note||""})),customer_name:fd.destination==="account"?fd.customer_name:fd.sale_customer_name,payment_method:fd.payment_method,destination:frontTab?"tab":fd.destination,account_id:newOwner?"":fd.account_id,account_type:frontTab?"tab":newOwner?"owner":"customer",owner_pricing:frontTab&&fd.owner_pricing==="true",event_id:fd.event_id,origin_token:originToken});cart={};saveCart();draw();modalBody.innerHTML=`<div class="modal-content order-success"><span class="success-icon">✓</span><h2>Pedido confirmado</h2><b class="order-number">#${esc(result.id.slice(0,8).toUpperCase())}</b><div class="success-summary"><div><span>Itens</span><b>${quantity}</b></div><div><span>Total</span><b>${money(total)}</b></div><div><span>Destino</span><b>${fd.destination==="account"?(frontTab?'Comanda':'Fiado'):fd.destination==="event"?'Consumação de evento':esc(paymentLabel)}</b></div></div>${hasFood?`<p class="notice">Pedido salvo e enviado para a cozinha. Acompanhe o recebimento em Pedidos.</p>`:""}<button class="primary checkout-button" data-new-order>Novo pedido</button></div>`;return}finally{checkoutSubmitting=false;if(form.isConnected){submit.disabled=false;updateCheckoutKind(form)}}
+      try{const newOwner=fd.account_id==="__new_owner",frontTab=fd.destination==="account"&&module==="Frente de caixa",result=await mutate({action:"sale.checkout",items:cartLines().map(([menu_id,line])=>({menu_id,quantity:line.quantity,note:line.note||""})),customer_name:fd.destination==="account"?fd.customer_name:fd.sale_customer_name,payment_method:fd.payment_method,destination:frontTab?"tab":fd.destination,account_id:newOwner?"":fd.account_id,account_type:frontTab?"tab":newOwner?"owner":"customer",owner_pricing:frontTab&&fd.owner_pricing==="true",event_id:fd.event_id,origin_token:originToken});cart={};saveCart();draw();modalBody.innerHTML=`<div class="modal-content order-success"><span class="success-icon">✓</span><h2>Pedido confirmado</h2><b class="order-number">#${esc(result.id.slice(0,8).toUpperCase())}</b><div class="success-summary"><div><span>Itens</span><b>${quantity}</b></div><div><span>Total</span><b>${money(total)}</b></div><div><span>Destino</span><b>${fd.destination==="account"?(frontTab?'Comanda':'Fiado'):fd.destination==="event"?'Consumação de evento':esc(paymentLabel)}</b></div></div>${hasFood?`<p class="notice">Comanda enviada para a fila de impressão da cozinha.</p>`:""}<button class="primary checkout-button" data-new-order>Novo pedido</button></div>`;return}finally{checkoutSubmitting=false;if(form.isConnected){submit.disabled=false;updateCheckoutKind(form)}}
     }
     closeModal();draw();
   }catch(error){toast(error.message,true)}
@@ -1402,107 +1355,9 @@ document.addEventListener("toggle",event=>{
 },true);
 document.addEventListener("fullscreenchange",()=>{if(kitchenViewOpen())draw()});
 import { createStockEntry } from "./stock-entry.js";
-import { mergeState, mergeRecords, refreshDelay } from "./data-sync.js?v=incremental-20261020";
-import { createLiveSync, createCheckoutRetry } from "./live-sync.js?v=orders-20261021";
-import { createOperationAccessCache } from "./module-access.js?v=fast-modules-20261021";
-const operationAccessCache=createOperationAccessCache();
+import { createCheckoutRetry } from "./checkout-retry.js?v=direct-20261021";
 const checkoutRetry=createCheckoutRetry(sessionStorage);
-const liveSync=createLiveSync({headers:syncHeaders,identity:authIdentity,active:()=>Boolean(module)&&!document.hidden&&navigator.onLine!==false&&Boolean(token||deviceToken||originToken),refresh:()=>load(true).catch(showSyncError),status:connected=>{
-  const box=document.querySelector("#orderConnection");if(!box)return;
-  box.hidden=!(module&&(token||deviceToken||originToken));box.dataset.connected=String(connected);
-  box.textContent=navigator.onLine===false?"Sem conexão. Confira a internet antes de enviar pedidos.":connected?"Atualização ao vivo ativa":"Atualização periódica ativa · reconectando ao vivo";
-}});
-let kitchenAcknowledging=false;
-async function acknowledgeKitchen(){
-  if(kitchenAcknowledging||document.hidden||!kitchenViewOpen())return;
-  const ids=entries(data.kitchen).filter(([,order])=>!order.received_at&&!["delivered","done","cancelled"].includes(order.status||"pending")).slice(0,80).map(([id])=>id);
-  if(!ids.length)return;
-  kitchenAcknowledging=true;
-  try{
-    const response=await fetch("/api/mutate",{method:"POST",headers:{"content-type":"application/json",...syncHeaders()},body:JSON.stringify({action:"kitchen.received",ids})});
-    if(!response.ok)throw new Error("Não foi possível confirmar o recebimento na cozinha.");
-    await load(true);
-  }catch(error){showSyncError(error)}finally{kitchenAcknowledging=false}
-}
-function kitchenReceipt(order){
-  if(!order.received_at)return (order.status||"pending")==="pending"?'<small class="kitchen-receipt waiting">Aguardando confirmação da cozinha</small>':"";
-  const seconds=Math.max(0,Math.round((Date.parse(order.received_at)-Date.parse(order.created_at))/1000));
-  return `<small class="kitchen-receipt">Recebido na cozinha${Number.isFinite(seconds)?` · ${seconds<60?`${seconds} s`:`${Math.round(seconds/60)} min`} após o envio`:""}</small>`;
-}
 const simpleStockEntry=createStockEntry({getStocks:()=>data.stock_items,openModal,closeModal,modalBody,mutate,draw,toast,esc,money,stockQuantity});
-const reportKinds=["sales","account_payments","staff_shifts","stock_events","hosted_events"];
-function reportQuery(){
-  const cashOptions=entries(data.cash).sort((a,b)=>(b[1].opened_at||"").localeCompare(a[1].opened_at||""));
-  const selected=periodSelection([],cashOptions,summaryFilter);
-  return selected.cashId?{cash_id:selected.cashId}:{from:selected.start.toISOString(),to:selected.end.toISOString()};
-}
-function historyKey(options){return JSON.stringify(options)}
-function historyScopeReady(query){return reportKinds.every(kind=>historyPages.get(historyKey({kind,...query}))?.complete)}
-function reportHistoryReady(){return historyScopeReady(reportQuery())}
-async function loadHistory(options,all=false,more=false){
-  const key=historyKey(options),identity=authIdentity(),generation=syncGeneration;
-  if(historyLoads.has(key))return historyLoads.get(key);
-  const state=historyPages.get(key)||{loaded:false,complete:false,next:null,error:null};
-  if(state.complete||state.loaded&&!all&&!more)return;
-  state.error=null;historyPages.set(key,state);
-  const task=(async()=>{
-    do{
-      const params=new URLSearchParams({...options,limit:"200",...(state.next?{before:state.next}:{})});
-      const response=await fetch(`/api/history?${params}`,{headers:syncHeaders()});
-      const result=await response.json();
-      if(identity!==authIdentity()||generation!==syncGeneration)return;
-      if(!response.ok)throw new Error(result.error||"Falha ao carregar o hist\u00f3rico.");
-      mergeRecords(data,result.kind,result.records,result.versions,syncVersions);
-      state.next=result.next;state.loaded=true;state.complete=!result.next;
-    }while(all&&!state.complete);
-  })();
-  historyLoads.set(key,task);
-  try{await task}catch(error){state.error=error;throw error}finally{if(historyLoads.get(key)===task)historyLoads.delete(key)}
-}
-function historyControls(options){
-  const key=historyKey(options),state=historyPages.get(key),loading=historyLoads.has(key);
-  if(state?.complete)return "";
-  return `<div class="history-load-more"><p class="muted">${state?.error?"N\u00e3o foi poss\u00edvel carregar o hist\u00f3rico.":loading?"Carregando hist\u00f3rico...":"O hist\u00f3rico \u00e9 carregado em p\u00e1ginas."}</p><button type="button" data-history-more="${esc(key)}" ${loading?"disabled":""}>${state?.error?"Tentar novamente":state?.loaded?"Carregar mais antigos":"Carregar hist\u00f3rico"}</button></div>`;
-}
-function ensureVisibleHistory(){
-  const requests=[];
-  const enqueue=(options,all=false)=>{
-    const key=historyKey(options),state=historyPages.get(key);
-    if(!historyLoads.has(key)&&!state?.error&&!(all?state?.complete:state?.loaded))requests.push(loadHistory(options,all));
-  };
-  if(module==="Admin"&&page==="cash"&&cashReportsOpen)for(const kind of reportKinds)enqueue({kind,...reportQuery()},true);
-  if(module==="Admin"&&page==="staff"&&staffCashId)for(const kind of reportKinds)enqueue({kind,cash_id:staffCashId},true);
-  if(page==="stock"&&stockHistoryOpen){enqueue({kind:"stock_movements"});const target=app.querySelector(".stock-history-list");if(target&&!target.querySelector(".history-load-more"))target.insertAdjacentHTML("beforeend",historyControls({kind:"stock_movements"}))}
-  if(page==="kitchen"&&kitchenHistoryOpen){
-    enqueue({kind:"kitchen"});const target=app.querySelector(".kitchen-history .list");if(target&&!target.querySelector(".history-load-more"))target.insertAdjacentHTML("beforeend",historyControls({kind:"kitchen"}));
-  }
-  if(requests.length)Promise.all(requests).then(()=>draw()).catch(error=>{draw();showSyncError(error);const target=app.querySelector(".cash-reports-body");if(target&&cashReportsOpen)target.innerHTML='<p role="alert">Falha ao carregar o per&iacute;odo. <button data-history-retry>Tentar novamente</button></p>';});
-}
-document.addEventListener("visibilitychange",()=>{
-  clearInterval(refreshTimer);
-  if(document.hidden)liveSync.stop();else liveSync.ensure();
-  if(!document.hidden&&(token||deviceToken||originToken))load(true).then(()=>draw()).catch(error=>{showSyncError(error);draw()});
-});
-window.addEventListener("online",()=>{liveSync.ensure();if(!document.hidden&&(token||deviceToken||originToken))load(true).then(()=>draw()).catch(showSyncError)});
-window.addEventListener("offline",()=>liveSync.stop());
-window.addEventListener("pagehide",()=>liveSync.stop());
-document.addEventListener("toggle",event=>{
-  if(!event.target.isConnected)return;
-  if(event.target.open&&event.target.matches?.(".cash-reports,.stock-history,.kitchen-history,.front-kitchen-history")){
-    if(event.target.matches(".cash-reports")){cashReportsOpen=true;if(!reportHistoryReady())event.target.querySelector(".cash-reports-body").innerHTML='<p role="status">Carregando o per&iacute;odo selecionado...</p>'}
-    if(event.target.matches(".stock-history"))stockHistoryOpen=true;
-    if(event.target.matches(".kitchen-history"))kitchenHistoryOpen=true;
-    if(event.target.matches(".front-kitchen-history"))frontKitchenHistoryOpen=true;
-    ensureVisibleHistory();
-  }
-},true);
-document.addEventListener("click",async event=>{
-  if(event.target.closest("[data-sync-usage]")){openModal(`<h2>Uso da sincroniza&ccedil;&atilde;o</h2><p>Desde ${new Date(syncUsage.started).toLocaleTimeString("pt-BR")} nesta aba:</p><p><b>${syncUsage.requests}</b> consultas de atualiza&ccedil;&atilde;o.</p><p><b>${syncUsage.measured?syncUsage.rows.toLocaleString("pt-BR"):"Indispon&iacute;vel"}</b> linhas lidas para atualizar os dados.</p><p class="muted">Este contador acompanha as atualiza&ccedil;&otilde;es desta aba. Hist&oacute;ricos, vendas, autentica&ccedil;&atilde;o e outros aparelhos tamb&eacute;m consomem recursos. O consumo total e a cota di&aacute;ria est&atilde;o no painel Cloudflare.</p>`);return}
-  const button=event.target.closest("[data-history-more],[data-history-retry]");if(!button)return;
-  if(button.hasAttribute("data-history-retry")){for(const state of historyPages.values())state.error=null;draw();return}
-  button.disabled=true;
-  try{await loadHistory(JSON.parse(button.dataset.historyMore),false,true);draw()}catch(error){showSyncError(error);button.disabled=false}
-});
 async function start(){try{if(inviteToken){await claimInvite();module="Frente de caixa";page="sales";await load()}else if(directKitchen)await enterModule("Cozinha");else draw()}catch(error){draw();showSyncError(error);toast(error.message,true)}}
 start();
 
