@@ -13,9 +13,8 @@ const { token } = await api('/api/login', {}, { password: process.env.KITCHEN_TE
 const admin = { authorization: `Bearer ${token}` };
 const mutate = (body, headers = admin) => api('/api/mutate', headers, body);
 async function device(role) {
-  const created = await mutate({ action: 'device.create', role, label: `Local ${role}` });
-  const claimed = await api('/api/device/claim', {}, { code: created.code });
-  return { 'x-device-access': claimed.access_token };
+  const access = await api('/api/access', {}, { role });
+  return { 'x-device-access': access.access_token };
 }
 async function connect(headers) {
   const { ticket } = await api('/api/live-ticket', headers, {});

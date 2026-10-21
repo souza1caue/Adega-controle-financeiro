@@ -193,6 +193,7 @@ async function loadState(render=true){
   const response=await fetch(`/api/state${syncCursor===null?"":"?since="+syncCursor}`,{headers:{...(frontIdentityToken?{"x-front-identity":frontIdentityToken}:{}),...(originToken?{"x-staff-access":originToken}:{}),...(deviceToken?{"x-device-access":deviceToken}:{}),...(token?{authorization:`Bearer ${token}`}:{})}});
   if(identity!==authIdentity())return;
   if(!response.ok&&response.status!==401){const result=await response.json().catch(()=>({}));throw new Error(result.error||"Falha ao atualizar os dados. Tentaremos novamente.")}
+  if(response.status===401&&deviceToken.startsWith("operation.")&&["Frente de caixa","Cozinha"].includes(module)){await openOperationalAccess(module==="Cozinha"?"kitchen":"front");return loadState(render)}
   if(!response.ok){
     frontIdentityToken="";localStorage.removeItem("frontIdentityToken");data.front_identity=null;
     if(originToken){originToken="";localStorage.removeItem("staffAccessToken");history.replaceState({},"",location.pathname);module=null;page=null;if(render){draw();toast("O caixa foi fechado. O acesso deste aparelho foi encerrado.",true)}}
@@ -256,17 +257,37 @@ function heading(title,action=""){return `<div class="section-head"><div><div cl
 function empty(text){return `<div class="empty">${esc(text)}</div>`}
 
 function portal(){
-  if(originToken){module="Frente de caixa";page="sales";draw();return}
-  if(deviceToken){module=deviceRole==="kitchen"?"Cozinha":"Frente de caixa";page=deviceRole==="kitchen"?"kitchen":"sales";draw();return}
-  if(directKitchen&&token){module="Cozinha";page="kitchen";prepareKitchenAlerts();draw();return}
-  if(staffDeviceManaged&&!token&&!directKitchen){nav.innerHTML="";app.innerHTML=`<section class="portal staff-access-ended"><div class="access-ended-icon">×</div><div class="eyebrow">Acesso da equipe encerrado</div><h1>Este caixa foi fechado</h1><p class="subtitle">O acesso deste dispositivo terminou junto com o caixa em que o QR Code foi gerado.</p><div class="notice"><b>Para trabalhar novamente:</b> leia o QR Code gerado no próximo caixa.</div><button data-owner-login>Entrar como proprietário</button></section>`;return}
-  if(!token){nav.innerHTML="";app.innerHTML=loginPage();return}
   nav.innerHTML="";
-  app.innerHTML=`<section class="portal"><div class="eyebrow">Operação integrada</div><h1>Escolha o módulo desta máquina</h1><p class="subtitle">Cada tela acompanha os mesmos dados em tempo real.</p><div class="module-grid">
-    ${[["Frente de caixa","Vendas, comandas e acompanhamento de pedidos."],["Cozinha","Fila de preparo com atualização automática."],["Admin","Cardápio, caixa, fiado e relatórios."]].map(([name,desc])=>`<button class="module-card" data-module="${name}"><span>ACESSAR</span><b>${name}</b><span>${desc}</span></button>`).join("")}
-  </div></section>`;
+  app.innerHTML=`<section class="portal"><div class="eyebrow">Controle da Adega</div><h1>Escolha onde entrar</h1><p class="subtitle">Caixa e Cozinha pelo mesmo link, com pedidos atualizados em tempo real.</p><div class="module-grid">  ${[["Frente de caixa","Caixa","Vendas, comandas e acompanhamento de pedidos."],["Cozinha","Cozinha","Fila de preparo e pedidos prontos."],["Admin","Admin","Estoque, caixa, cardápio e relatórios. Acesso com senha."]].map(([name,label,description])=>`<button class="module-card" data-module="${name}"><span>ACESSAR</span><b>${label}</b><span>${description}</span></button>`).join("")}  </div></section>`;
 }
-function setupNav(items){nav.innerHTML=fiadoLabels(items.map(([key,label])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${label}</button>`).join("")+(deviceToken?`<button data-device-logout class="ghost">Sair</button>`:token?`<button data-home class="ghost">Módulos</button>`:""))}
+let moduleEntryGeneration=0;
+async function openOperationalAccess(role,generation=moduleEntryGeneration){
+  const response=await fetch("/api/access",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({role})}),result=await response.json();
+  if(generation!==moduleEntryGeneration)return false;
+  if(!response.ok)throw new Error(result.error||"Não foi possível acessar esta área.");
+  deviceToken=result.access_token;deviceRole=result.role;
+  localStorage.setItem("deviceAccessToken",deviceToken);localStorage.setItem("deviceRole",deviceRole);
+  return true;
+}
+async function enterModule(name){
+  if(!["Frente de caixa","Cozinha","Admin"].includes(name))return;
+  const generation=++moduleEntryGeneration;
+  liveSync.stop();
+  module=name;page=name==="Cozinha"?"kitchen":name==="Admin"?"cash":"sales";
+  originToken="";staffDeviceManaged=false;inviteToken="";
+  localStorage.removeItem("staffAccessToken");localStorage.removeItem("staffDeviceManaged");
+  deviceToken="";deviceRole="";localStorage.removeItem("deviceAccessToken");localStorage.removeItem("deviceRole");
+  knownKitchenOrderIds=null;knownFrontKitchenStatuses=null;
+  try{
+    if(name!=="Admin"&&!await openOperationalAccess(name==="Cozinha"?"kitchen":"front",generation))return;
+    if(name!=="Admin"||token)await load(false);
+  }catch(error){if(generation===moduleEntryGeneration){module=null;page=null;draw()}throw error}
+  if(generation!==moduleEntryGeneration)return;
+  if(kitchenViewOpen())prepareKitchenAlerts();
+  if(readyAlertsOpen())prepareFrontAlerts();
+  draw();
+}
+function setupNav(items){nav.innerHTML=fiadoLabels([["Frente de caixa","Caixa"],["Cozinha","Cozinha"],["Admin","Admin"]].map(([name,label])=>`<button data-module="${name}" class="${module===name?'nav-active':''}">${label}</button>`).join("")+items.map(([key,label])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${label}</button>`).join(""))}
 function frontIdentityBar(){
   const name=data.front_identity?.source_name||"";
   if(name)return `<section class="front-identity"><label>Atendente<input value="${esc(name)}" readonly aria-label="Atendente deste caixa"></label><span>Nome confirmado até o fechamento do caixa</span></section>`;
@@ -424,8 +445,7 @@ function queueAutomaticPrint(){if(printMode!=="automatic"||printingBusy)return;c
 
 function deviceDialog(){openModal(`<h2>Autorizar novo dispositivo</h2><p class="muted">O código gerado poderá ser usado uma vez e expirará em 10 minutos.</p><form data-form="device-create"><div class="field"><label>Nome do dispositivo</label><input name="label" placeholder="Ex.: Computador do caixa" required autofocus></div><div class="field"><label>Área permitida</label><select name="role"><option value="front">Frente de Caixa</option><option value="kitchen">Cozinha</option></select></div><button class="primary checkout-button">Gerar código</button></form>`)}
 function devicesPage(){const devices=entries(data.device_access).sort((a,b)=>(b[1].created_at||"").localeCompare(a[1].created_at||""));return heading("Dispositivos autorizados",`<button class="primary" data-new-device>+ Autorizar dispositivo</button>`)+`<div class="notice">Use um acesso separado em cada computador do Caixa ou da Cozinha. Você pode revogá-lo a qualquer momento.</div><div class="list">${devices.map(([id,device])=>`<div class="device-row"><div><b>${esc(device.label)}</b><small>${device.role==="front"?"Frente de Caixa":"Cozinha"} · ${device.claimed_at?`Ativado em ${date(device.claimed_at)}`:"Aguardando ativação"}${device.revoked_at?` · Revogado em ${date(device.revoked_at)}`:""}</small></div><span class="status ${device.revoked_at?"done":device.claimed_at?"ready":"pending"}">${device.revoked_at?"Revogado":device.claimed_at?"Ativo":"Pendente"}</span>${device.revoked_at?"":`<button class="danger" data-revoke-device="${id}">Revogar</button>`}</div>`).join("")||empty("Nenhum dispositivo autorizado.")}</div>`}
-function kitchenLoginPage(){return `<section class="portal access-portal kitchen-access"><div class="eyebrow">Computador da cozinha</div><h1>Acessar cozinha</h1><p class="subtitle">Entre para acompanhar os pedidos e atualizar o preparo.</p><form data-form="login" class="card"><div class="field"><label>Senha administrativa</label><input type="password" name="password" autocomplete="current-password" required autofocus></div><label class="compare-toggle"><input type="checkbox" name="remember" value="true"> Manter este computador conectado por 30 dias</label><button class="primary checkout-button" type="submit">Entrar na cozinha</button></form></section>`}
-function loginPage(){if(directKitchen)return kitchenLoginPage();return `<section class="portal access-portal"><div class="eyebrow">Sistema privado</div><h1>Entrar no Controle da Adega</h1><p class="subtitle">Somente proprietários e dispositivos autorizados podem acessar.</p><div class="access-grid"><form data-form="login" class="card"><h2>Proprietário</h2><p class="muted">Use sua senha para consultar estoque, vendas e administração de qualquer dispositivo.</p><div class="field"><label>Senha administrativa</label><input type="password" name="password" required autofocus></div><label class="compare-toggle"><input type="checkbox" name="remember" value="true"> Manter este dispositivo conectado por 30 dias</label><button class="primary checkout-button" type="submit">Entrar como proprietário</button></form><form data-form="device-claim" class="card"><h2>Caixa ou Cozinha</h2><p class="muted">Digite o código temporário gerado pelo proprietário no Admin.</p><div class="field"><label>Código de autorização</label><input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required></div><button class="checkout-button" type="submit">Autorizar este dispositivo</button></form></div></section>`}
+function loginPage(){return `<section class="portal access-portal"><div class="eyebrow">Administração</div><h1>Entrar no Admin</h1><p class="subtitle">Use a senha para acessar estoque, fechamento de caixa e relatórios.</p><form data-form="login" class="card"><div class="field"><label>Senha administrativa</label><input type="password" name="password" autocomplete="current-password" required autofocus></div><label class="compare-toggle"><input type="checkbox" name="remember" value="true"> Manter conectado por 30 dias</label><button class="primary checkout-button" type="submit">Entrar no Admin</button></form></section>`}
 function summaryPage(){
   const all=entries(data.sales).filter(([,sale])=>!sale.voided_at),nowDate=new Date(),start=new Date(nowDate),end=new Date(nowDate),cashOptions=entries(data.cash).sort((a,b)=>(b[1].opened_at||"").localeCompare(a[1].opened_at||""));let sales=all,periodLabel=summaryFilter;
   if(summaryFilter==="Diário")start.setHours(0,0,0,0);
@@ -1082,12 +1102,12 @@ document.addEventListener("click",async event=>{
   const el=event.target.closest("button");if(!el)return;
   if(readyAlertsOpen())prepareFrontAlerts();
   try{
-    if(el.dataset.module){module=el.dataset.module;page=null;if(module==="Cozinha")prepareKitchenAlerts();else knownKitchenOrderIds=null;if(readyAlertsOpen())prepareFrontAlerts();else knownFrontKitchenStatuses=null;draw()}
+    if(el.dataset.module){await enterModule(el.dataset.module)}
     else if(el.dataset.page){page=el.dataset.page;if(kitchenViewOpen())prepareKitchenAlerts();else knownKitchenOrderIds=null;draw()}
     else if(el.hasAttribute("data-admin-logout")){token="";localStorage.removeItem("adminToken");sessionStorage.removeItem("adminToken");module=null;page=null;draw()}
     else if(el.hasAttribute("data-device-logout")){deviceToken="";deviceRole="";localStorage.removeItem("deviceAccessToken");localStorage.removeItem("deviceRole");module=null;page=null;draw()}
     else if(el.hasAttribute("data-owner-login")){staffDeviceManaged=false;localStorage.removeItem("staffDeviceManaged");module=null;page=null;draw()}
-    else if(el.hasAttribute("data-home")||el.id==="homeBtn"){directKitchen=false;history.replaceState({},"",location.pathname);module=null;page=null;knownKitchenOrderIds=null;knownFrontKitchenStatuses=null;draw()}
+    else if(el.hasAttribute("data-home")||el.id==="homeBtn"){moduleEntryGeneration++;directKitchen=false;history.replaceState({},"",location.pathname);module=null;page=null;knownKitchenOrderIds=null;knownFrontKitchenStatuses=null;draw()}
     else if(el.hasAttribute("data-close"))closeModal();
     else if(el.dataset.cartAdd)changeCart(el.dataset.cartAdd,1);
     else if(el.dataset.cartMinus)changeCart(el.dataset.cartMinus,-1);
@@ -1212,7 +1232,7 @@ document.addEventListener("submit",async event=>{
   event.preventDefault();const form=event.target;const fd=Object.fromEntries(new FormData(form));
   try{
     if(form.dataset.form==="login"){
-      const remember=Boolean(fd.remember),response=await fetch("/api/login",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({password:fd.password,remember})}),result=await response.json();if(!response.ok)throw new Error(result.error);token=result.token;if(remember)localStorage.setItem("adminToken",token);else sessionStorage.setItem("adminToken",token);module=null;page=null;await load(false);draw();return;
+      const remember=Boolean(fd.remember),response=await fetch("/api/login",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({password:fd.password,remember})}),result=await response.json();if(!response.ok)throw new Error(result.error);token=result.token;if(remember)localStorage.setItem("adminToken",token);else sessionStorage.setItem("adminToken",token);module="Admin";page="cash";await load(false);draw();return;
     }
     if(form.dataset.form==="front-identify"){const submit=form.querySelector("button[type='submit']");if(submit.disabled)return;submit.disabled=true;try{const result=await mutate({action:"front.identify",name:fd.name});frontIdentityToken=result.access_token;localStorage.setItem("frontIdentityToken",frontIdentityToken);await load(false);draw()}finally{if(submit.isConnected)submit.disabled=false}return}
     if(form.dataset.form==="device-claim"){const response=await fetch("/api/device/claim",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({code:fd.code})}),result=await response.json();if(!response.ok)throw new Error(result.error);deviceToken=result.access_token;deviceRole=result.role;localStorage.setItem("deviceAccessToken",deviceToken);localStorage.setItem("deviceRole",deviceRole);module=null;page=null;await load(false);draw();return}
@@ -1365,9 +1385,9 @@ import { createStockEntry } from "./stock-entry.js";
 import { mergeState, mergeRecords, refreshDelay } from "./data-sync.js?v=incremental-20261020";
 import { createLiveSync, createCheckoutRetry } from "./live-sync.js?v=orders-20261021";
 const checkoutRetry=createCheckoutRetry(sessionStorage);
-const liveSync=createLiveSync({headers:syncHeaders,identity:authIdentity,active:()=>!document.hidden&&navigator.onLine!==false&&Boolean(token||deviceToken||originToken),refresh:()=>load(true).catch(showSyncError),status:connected=>{
+const liveSync=createLiveSync({headers:syncHeaders,identity:authIdentity,active:()=>Boolean(module)&&!document.hidden&&navigator.onLine!==false&&Boolean(token||deviceToken||originToken),refresh:()=>load(true).catch(showSyncError),status:connected=>{
   const box=document.querySelector("#orderConnection");if(!box)return;
-  box.hidden=!(token||deviceToken||originToken);box.dataset.connected=String(connected);
+  box.hidden=!(module&&(token||deviceToken||originToken));box.dataset.connected=String(connected);
   box.textContent=navigator.onLine===false?"Sem conexão. Confira a internet antes de enviar pedidos.":connected?"Atualização ao vivo ativa":"Atualização periódica ativa · reconectando ao vivo";
 }});
 let kitchenAcknowledging=false;
@@ -1461,7 +1481,7 @@ document.addEventListener("click",async event=>{
   button.disabled=true;
   try{await loadHistory(JSON.parse(button.dataset.historyMore),false,true);draw()}catch(error){showSyncError(error);button.disabled=false}
 });
-async function start(){try{if(inviteToken)await claimInvite();if(token||deviceToken||originToken)await load();else draw()}catch(error){draw();showSyncError(error);toast(error.message,true)}}
+async function start(){try{if(inviteToken){await claimInvite();module="Frente de caixa";page="sales";await load()}else if(directKitchen)await enterModule("Cozinha");else draw()}catch(error){draw();showSyncError(error);toast(error.message,true)}}
 start();
 
 document.addEventListener("input",event=>{

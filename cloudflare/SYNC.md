@@ -2,6 +2,16 @@
 
 ## Live order notifications (2026-10-21)
 
+The root entry shows Caixa, Cozinha and Admin. Operational entry uses
+`POST /api/access` with `front` or `kitchen`, without a password or registered
+device. This intentionally makes those operational roles available to anyone
+who opens the system. Signed 24-hour tokens preserve the existing role limits,
+renew automatically when needed, and do not create D1 device records.
+Admin still requires its administrative login; operational tokens cannot grant
+administrative privileges. The front retains cashier name identification for
+audit attribution. Legacy QR and authorized-device APIs remain compatible.
+The top navigation switches operational roles through the same URL.
+
 Authenticated, visible clients obtain a signed 60-second connection ticket from
 `POST /api/live-ticket` and open `/api/live` with a same-origin WebSocket.
 The SQLite-backed `OrderLive` Durable Object uses the hibernation API and sends

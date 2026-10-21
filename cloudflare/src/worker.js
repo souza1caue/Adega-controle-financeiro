@@ -1,6 +1,7 @@
 import { closingSummary } from "./cash-summary.js";
 import { syncState, historyPage, allowedKinds } from "./state-sync.js";
 import { liveTicket, verifyLiveTicket, orderHub, publishChanges } from "./live-orders.js";
+import { operationAccess, verifyOperationAccess } from "./operation-access.js";
 export { OrderLive } from "./live-orders.js";
 function paymentGroup(value) {
   const method = String(value || "").trim();
@@ -61,6 +62,7 @@ async function isAdmin(request, env) {
 async function authorizedDevice(request, env) {
   const token = request.headers.get("x-device-access") || "";
   if (!token) return null;
+  if (token.startsWith("operation.")) return verifyOperationAccess(token, env.SESSION_SECRET);
   const tokenHash = await sha256(token);
   const row = await env.DB.prepare("SELECT id,data FROM records WHERE kind='device_access' AND json_extract(data,'$.token_hash')=? LIMIT 1").bind(tokenHash).first();
   if (!row) return null;
@@ -1480,6 +1482,12 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     try {
+      if (url.pathname === "/api/access" && request.method === "POST") {
+        if (!env.SESSION_SECRET) return reply({ error: "Acesso operacional indisponível." }, 503);
+        const { role } = await request.json();
+        if (!["front", "kitchen"].includes(role)) return reply({ error: "Escolha Caixa ou Cozinha." }, 400);
+        return reply({ access_token: await operationAccess(role, env.SESSION_SECRET), role });
+      }
       if (url.pathname === "/api/live" && request.method === "GET") {
         if (request.headers.get("Origin") !== url.origin) return reply({ error: "Origem inválida." }, 403);
         if (!env.ORDER_LIVE || !env.SESSION_SECRET) return reply({ error: "Atualização automática indisponível." }, 503);
