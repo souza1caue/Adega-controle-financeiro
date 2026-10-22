@@ -338,7 +338,7 @@ async function mutate(request, env) {
   const db = env.DB;
   const staffToken = request.headers.get("x-staff-access") || "";
   const device = await authorizedDevice(request, env);
-  const frontActions = new Set(["front.identify", "sale.checkout", "sale.order.void", "stock.event.create", "account.addItem", "account.create", "account.update", "account.receivePayment", "account.convertToCredit", "account.cancelItem", "kitchen.status"]);
+  const frontActions = new Set(["front.identify", "sale.checkout", "sale.order.void", "stock.event.create", "account.addItem", "account.create", "account.update", "account.receivePayment", "account.convertToCredit", "account.cancelItem", "account.itemToEvent", "kitchen.status"]);
   if (staffToken) {
     if (!frontActions.has(action)) return reply({ error: "Este QR Code permite acesso somente à Frente de Caixa." }, 403);
     await orderOrigin(db, staffToken);
@@ -913,9 +913,15 @@ async function mutate(request, env) {
     }
     if (input.print_order || input.send_to_kitchen) statements.push(putRecord(db, "kitchen", uid(), { ...entry, customer_name: account.customer_name, note: (input.note || "").trim(), origin: "Fiado", status: "pending", print_status: "pending", print_count: 0 }));
     await db.batch(statements);
-  } else if (action === "account.cancelItem") {
+  } else if (action === "account.cancelItem" || action === "account.itemToEvent") {
+    const toEvent = action === "account.itemToEvent";
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Conta não encontrada.");
+    if (toEvent) {
+      if (!["loss", "courtesy"].includes(input.event_type)) throw new Error("Selecione perda ou cortesia.");
+      const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+      if (account.account_type !== "tab" || account.status === "closed" || !open || account.cash_session_id !== open.id || account.hosted_event_id) throw new Error("Selecione uma comanda comum aberta neste caixa.");
+    }
     if (!admin && account.account_type !== "tab") throw new Error("O fiado está disponível somente no Admin.");
     required(input.reason, "o motivo do cancelamento");
     required(input.responsible, "o responsável pelo cancelamento");
@@ -926,6 +932,20 @@ async function mutate(request, env) {
     if (itemTotal > accountBalance(account) + 0.001) throw new Error("Não é possível cancelar um consumo que já foi recebido.");
     item.cancelled_at = now(); item.cancel_reason = input.reason.trim(); item.cancelled_by = input.responsible.trim();
     const statements = [putRecord(db, "accounts", id, account)];
+    if (toEvent) {
+      const eventId = uid(), origin = await orderOrigin(db, input.origin_token);
+      item.stock_event_id = eventId;
+      item.event_type = input.event_type;
+      const cost = Math.round(Number(item.unit_cost || 0) * Number(item.quantity) * 100) / 100;
+      statements.push(putRecord(db, "stock_events", eventId, {
+        event_type: input.event_type, responsible: input.responsible, reason: input.reason.trim(), beneficiary: account.customer_name,
+        account_id: id, account_item_id: item.id || "", items: [{ menu_id: item.menu_id || "", description: item.description, quantity: item.quantity, sale_price: item.price, stock_usage: item.stock_usage || [], cost }],
+        items_count: 1, units_count: Number(item.quantity), total_cost: cost, revenue_not_realized: itemTotal,
+        cash_session_id: account.cash_session_id, created_at: item.cancelled_at, created_by: input.responsible,
+        created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || ""
+      }));
+      statements[0] = putRecord(db, "accounts", id, account);
+    }
     if (item.id) {
       const related = await db.prepare("SELECT id,data FROM records WHERE kind='sales' AND json_extract(data,'$.account_item_id')=?").bind(item.id).all();
       for (const row of related.results) {
@@ -934,13 +954,13 @@ async function mutate(request, env) {
         statements.push(putRecord(db, "sales", row.id, sale));
       }
     }
-    if (Array.isArray(item.stock_usage) && item.stock_usage.length) {
+    if (!toEvent && Array.isArray(item.stock_usage) && item.stock_usage.length) {
       for (const usage of item.stock_usage) {
         const stockItem = await readRecord(db, "stock_items", usage.stock_item_id);
         if (!stockItem) continue;
         statements.push(...atomicStockChange(db, usage.stock_item_id, stockItem, "return", usage.quantity, { reason: `Cancelamento: ${item.cancel_reason}`, responsible: item.cancelled_by, reference_id: item.order_id }));
       }
-    } else if (item.menu_id) {
+    } else if (!toEvent && item.menu_id) {
       const product = await readRecord(db, "menu", item.menu_id);
       if (product?.stock_controlled) {
         const movement = stockMovement(db, item.menu_id, product, "return", item.quantity, { reason: `Cancelamento: ${item.cancel_reason}`, responsible: item.cancelled_by, reference_id: item.order_id, legacy_menu: true });
