@@ -30,11 +30,9 @@ test('Caixa and Cozinha open without password or registered device, while Admin 
     }
     assert.equal((await state(f, { authorization: `Bearer ${front.access_token}` })).status, 401);
     assert.equal((await access(f, 'admin')).status, 400);
-    const identity = await f.call({ action: 'front.identify', name: 'Ana' }, frontHeaders);
-    assert.equal(identity.status, 200);
     f.put('menu', 'food', { name: 'Porcao', category: 'Comidas', price: 20 });
-    const checkout = await f.call({ action: 'sale.checkout', customer_name: 'Cliente', payment_method: 'Digital', items: [{ menu_id: 'food', quantity: 1 }] }, { ...frontHeaders, 'x-front-identity': identity.access_token });
-    assert.equal(checkout.status, 200); assert.equal(f.records('kitchen')[0].created_by, 'Ana');
+    const checkout = await f.call({ action: 'sale.checkout', customer_name: 'Cliente', payment_method: 'Digital', items: [{ menu_id: 'food', quantity: 1 }] }, frontHeaders);
+    assert.equal(checkout.status, 200); assert.equal(f.records('kitchen')[0].created_by, 'Caixa principal');
     assert.equal((await f.call({ action: 'kitchen.received', ids: [checkout.id] }, kitchenHeaders)).status, 200);
     for (const status of ['started', 'ready']) assert.equal((await f.call({ action: 'kitchen.status', id: checkout.id, status }, kitchenHeaders)).status, 200);
     assert.equal((await state(f, frontHeaders)).kitchen[checkout.id].status, 'ready');
@@ -72,7 +70,7 @@ function screen() {
   context.authIdentity=()=>JSON.stringify([context.token,context.deviceToken,context.originToken]);
   const saved=new Map();
   context.operationAccessCache=createOperationAccessCache({request:(...args)=>context.fetch(...args),storage:{getItem:key=>saved.get(key),setItem:(key,value)=>saved.set(key,value)}});
-  runInNewContext(source.slice(source.indexOf('function portal(){'), source.indexOf('function frontIdentityBar(){')) + '\n' + source.split('\n').find(line => line.startsWith('function loginPage(){')), context);
+  runInNewContext(source.slice(source.indexOf('function portal(){'), source.indexOf('function sharedStaffAccessDialog(')) + '\n' + source.split('\n').find(line => line.startsWith('function loginPage(){')), context);
   return { context, requests, reads, draws };
 }
 

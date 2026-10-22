@@ -214,7 +214,7 @@ async function orderOrigin(db, token) {
   if (access.access_type === "named_device") {
     const cash = await readRecord(db, "cash", access.cash_session_id);
     if (!cash || cash.status !== "open") throw new Error("O caixa deste acesso foi fechado. Leia um novo QR Code no próximo caixa.");
-    return { source_type: "staff", source_name: access.employee_name || "", cash_session_id: access.cash_session_id };
+    return { source_type: "staff", source_name: access.employee_name || "Caixa", cash_session_id: access.cash_session_id };
   }
   const shift = await readRecord(db, "staff_shifts", access.shift_id);
   if (!shift || shift.status === "cancelled") throw new Error("O acesso deste funcionário foi revogado.");
@@ -354,32 +354,8 @@ async function mutate(request, env) {
     await putRecord(db, "staff_access", accessId, { access_type: "shared_invite", cash_session_id: open.id, invite_token: rawToken, token_hash: await sha256(rawToken), created_at: now() }).run();
     return reply({ ok: true, access_token: rawToken });
   }
-  const frontIdentityToken = request.headers.get("x-front-identity") || "";
-  if (action === "front.identify") {
-    const name = String(input.name || "").trim();
-    if (!name || name.length > 80) throw new Error("Informe seu nome, com até 80 caracteres.");
-    const existingToken = frontIdentityToken || staffToken;
-    if (existingToken) {
-      const origin = await orderOrigin(db, existingToken);
-      if (origin.source_name && origin.source_name !== name) throw new Error("O nome fica travado até o fechamento do caixa.");
-      if (!origin.source_name) {
-        const tokenHash = await sha256(existingToken);
-        await db.prepare("UPDATE records SET data=json_set(data,'$.employee_name',?,'$.identified_at',?) WHERE kind='staff_access' AND json_extract(data,'$.token_hash')=? AND json_extract(data,'$.employee_name')=''").bind(name, now(), tokenHash).run();
-        const confirmed = await orderOrigin(db, existingToken);
-        if (confirmed.source_name !== name) throw new Error("O nome fica travado até o fechamento do caixa.");
-      }
-      return reply({ ok: true, access_token: existingToken });
-    }
-    const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
-    if (!open) throw new Error("Abra o caixa antes de confirmar seu nome.");
-    const rawToken = `${uid()}${uid()}`;
-    await putRecord(db, "staff_access", uid(), { access_type: "named_device", employee_name: name, cash_session_id: open.id, token_hash: await sha256(rawToken), created_at: now(), identified_at: now() }).run();
-    return reply({ ok: true, access_token: rawToken });
-  }
-  if (frontIdentityToken && frontActions.has(action)) input.origin_token = frontIdentityToken;
-  // Use the confirmed identity for audit attribution throughout the cash session.
+  if(action === "front.identify")return reply({ok:true,disabled:true}); // Compatibility for older pages.
   const operationOrigin = input.origin_token ? await orderOrigin(db, input.origin_token) : null;
-  if (operationOrigin && !operationOrigin.source_name) throw new Error("Confirme seu nome na Frente de Caixa antes de lançar pedidos.");
   const automaticResponsible = operationOrigin?.source_name || device?.label || "Caixa principal";
   for (const field of ["responsible", "opened_by", "closed_by"]) {
     input[field] = typeof input[field] === "string" && input[field].trim() ? input[field].trim() : automaticResponsible;
@@ -388,7 +364,7 @@ async function mutate(request, env) {
   let checkoutReceipt = null;
   if (action === "sale.checkout" && input.request_id) {
     if (typeof input.request_id !== "string" || !/^[a-zA-Z0-9-]{16,100}$/.test(input.request_id)) throw new Error("Identificador de pedido inválido.");
-    const principal = frontIdentityToken || staffToken || request.headers.get("x-device-access") || request.headers.get("authorization");
+    const principal = staffToken || request.headers.get("x-device-access") || request.headers.get("authorization");
     const requestKey = await sha256(`${principal}:${input.request_id}`), payloadHash = await sha256(originalPayload);
     const previous = await db.prepare("SELECT payload_hash,order_id FROM checkout_requests WHERE request_key=?").bind(requestKey).first();
     if (previous) {
@@ -1180,6 +1156,7 @@ async function mutate(request, env) {
     if (input.destination === "account" || input.destination === "tab" || input.to_account === true) {
       const accountId = input.account_id || uid();
       let account = await readRecord(db, "accounts", accountId);
+      const existingAccount = Boolean(account);
       if (!account) {
         required(customerName, input.destination === "tab" ? "o nome para abrir a comanda" : "o cliente para criar o fiado");
         account = input.destination === "tab"
@@ -1193,7 +1170,11 @@ async function mutate(request, env) {
       if (account.owner_pricing && items.some(item => item.cost_mode !== "fixed" && item.stock_usage.some(usage => !(Number(usage.unit_cost) > 0)))) throw new Error("Configure o custo de todos os insumos antes de lançar na comanda de proprietário.");
       const accountEntries = items.map((item) => { const ownerCost = item.unit_cost; if (ownerPricing && ownerCost <= 0) throw new Error(`Configure o custo ou os insumos de ${item.description} antes de lançar na ficha de proprietário.`); return { id: uid(), menu_id: item.menu_id, cost_mode: item.cost_mode, unit_cost: item.unit_cost, item_category: item.category, stock_usage: item.stock_usage.map((usage) => ({ ...usage, quantity: Number(usage.quantity) * item.quantity })), description: item.description, quantity: item.quantity, price: ownerPricing ? Math.round(ownerCost * 100) / 100 : item.price, note: item.note, created_at: createdAt, order_id: orderId, cash_session_id: cashSessionId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }; });
       account.items = [...(account.items || []), ...accountEntries];
-      statements.push(putRecord(db, "accounts", accountId, account));
+      if (existingAccount) {
+        // Append to the current value instead of overwriting another device's order.
+        const paths = accountEntries.map(() => "'$.items[#]',json(?)").join(',');
+        statements.push(db.prepare(`UPDATE records SET data=json_insert(json_set(data,'$.items',json(COALESCE(json_extract(data,'$.items'),'[]'))),${paths}),updated_at=CURRENT_TIMESTAMP WHERE kind='accounts' AND id=?`).bind(...accountEntries.map(entry=>JSON.stringify(entry)), accountId));
+      } else statements.push(putRecord(db, "accounts", accountId, account));
       for (const entry of accountEntries) statements.push(putRecord(db, "sales", uid(), { menu_id: entry.menu_id, cost_mode: entry.cost_mode, unit_cost: entry.unit_cost, item_category: entry.item_category, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, item_note: entry.note, note, customer_name: orderCustomerName, payment_method: account.account_type === "tab" ? "Comanda" : "Caderneta", account_id: accountId, account_type: account.account_type || "customer", account_item_id: entry.id, cash_session_id: cashSessionId, order_id: orderId, created_at: createdAt, ...origin }));
       if (shouldPrint) statements.push(putRecord(db, "kitchen", orderId, { items: foodItems, description: `${foodItems.length} itens`, quantity: foodItems.reduce((sum, item) => sum + item.quantity, 0), customer_name: orderCustomerName, account_id: accountId, account_type: account.account_type || "customer", cash_session_id: cashSessionId, note, origin: account.account_type === "tab" ? "Comanda" : "Fiado", created_at: createdAt, status: "pending", print_status: "pending", print_count: 0, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "" }));
     } else if (input.destination === "event") {
@@ -1525,11 +1506,7 @@ export default {
         const kinds = allowedKinds(admin, device?.role === "kitchen");
         if (url.pathname === "/api/history") return reply(await historyPage(env.DB, url.searchParams, kinds));
         const result = await state(env.DB);
-        const identityToken = request.headers.get("x-front-identity") || staffToken;
-        result.front_identity = null;
-        if (identityToken) {
-          try { result.front_identity = identityToken === staffToken ? staffIdentity : await orderOrigin(env.DB, identityToken); } catch { /* Closed identities are discarded by the client. */ }
-        }
+        result.front_identity = device?.role === "kitchen" ? null : {source_type:"station",source_name:"Caixa"}; // Compatibility only.
         for (const access of Object.values(result.device_access || {})) {
           delete access.token_hash;
           delete access.claim_code_hash;

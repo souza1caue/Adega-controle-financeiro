@@ -16,7 +16,7 @@ let token = localStorage.getItem("adminToken") || sessionStorage.getItem("adminT
 let deviceToken = localStorage.getItem("deviceAccessToken") || "", deviceRole = localStorage.getItem("deviceRole") || "";
 let inviteToken = new URLSearchParams(location.search).get("access") || "";
 let originToken = inviteToken ? "" : localStorage.getItem("staffAccessToken") || "";
-let frontIdentityToken = localStorage.getItem("frontIdentityToken") || "";
+localStorage.removeItem("frontIdentityToken");
 let staffDeviceManaged = localStorage.getItem("staffDeviceManaged")==="true" || Boolean(inviteToken||originToken);
 if(inviteToken||originToken)localStorage.setItem("staffDeviceManaged","true");
 let summaryFilter = `day:${new Intl.DateTimeFormat("en-CA",{timeZone:"America/Sao_Paulo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date())}`;
@@ -179,12 +179,12 @@ function startRefresh(render){return setInterval(()=>{if(token||deviceToken||ori
 async function load(render=true){return loadState(render)}
 async function loadState(render=true){
   const identity=authIdentity(),generation=moduleEntryGeneration;
-  const response=await fetch("/api/state",{headers:{...(frontIdentityToken?{"x-front-identity":frontIdentityToken}:{}),...(originToken?{"x-staff-access":originToken}:{}),...(deviceToken?{"x-device-access":deviceToken}:{}),...(token?{authorization:`Bearer ${token}`}:{})}});
+  const response=await fetch("/api/state",{headers:{...(originToken?{"x-staff-access":originToken}:{}),...(deviceToken?{"x-device-access":deviceToken}:{}),...(token?{authorization:`Bearer ${token}`}:{})}});
   if(identity!==authIdentity()||generation!==moduleEntryGeneration)return;
   if(!response.ok&&response.status!==401){const result=await response.json().catch(()=>({}));throw new Error(result.error||"Falha ao atualizar os dados.")}
   if(response.status===401&&deviceToken.startsWith("operation.")&&["Frente de caixa","Cozinha"].includes(module)){if(!await openOperationalAccess(module==="Cozinha"?"kitchen":"front",generation))return;return loadState(render)}
   if(!response.ok){
-    frontIdentityToken="";localStorage.removeItem("frontIdentityToken");data.front_identity=null;
+
     if(originToken){originToken="";localStorage.removeItem("staffAccessToken");history.replaceState({},"",location.pathname);module=null;page=null;if(render){draw();toast("O caixa foi fechado. O acesso deste aparelho foi encerrado.",true)}}
     else if(token||deviceToken){token="";deviceToken="";deviceRole="";localStorage.removeItem("adminToken");sessionStorage.removeItem("adminToken");localStorage.removeItem("deviceAccessToken");localStorage.removeItem("deviceRole");module=null;page=null;if(render){draw();toast("Sua autorização expirou ou foi revogada.",true)}}
     throw new Error("Não foi possível carregar os dados.");
@@ -203,7 +203,6 @@ async function loadState(render=true){
     knownFrontKitchenStatuses=nextStatuses;
   }
   data=nextData;
-  if(frontIdentityToken&&!data.front_identity){frontIdentityToken="";localStorage.removeItem("frontIdentityToken")}
   if(originToken&&!activeCash()){
     originToken="";localStorage.removeItem("staffAccessToken");history.replaceState({},"",location.pathname);module=null;page=null;
     if(render)toast("O caixa foi fechado. O acesso deste aparelho foi encerrado.",true);
@@ -222,10 +221,9 @@ async function claimInvite(){
   originToken=result.access_token;staffDeviceManaged=true;localStorage.setItem("staffAccessToken",originToken);localStorage.setItem("staffDeviceManaged","true");
 }
 async function mutate(payload, admin=false){
-  if(module==="Frente de caixa"&&payload.action!=="front.identify"&&!data.front_identity?.source_name)throw new Error("Confirme seu nome antes de continuar.");
   const checkout=payload.action==="sale.checkout",scope=authIdentity(),original=payload;
   if(checkout)payload=checkoutRetry.begin(scope,original);
-  const response=await fetch("/api/mutate",{method:"POST",headers:{"content-type":"application/json",...(module==="Frente de caixa"&&frontIdentityToken?{"x-front-identity":frontIdentityToken}:{}),...(token?{authorization:`Bearer ${token}`}:{}) ,...(deviceToken?{"x-device-access":deviceToken}:{}),...(originToken?{"x-staff-access":originToken}:{})},body:JSON.stringify(payload)});
+  const response=await fetch("/api/mutate",{method:"POST",headers:{"content-type":"application/json",...(token?{authorization:`Bearer ${token}`}:{}) ,...(deviceToken?{"x-device-access":deviceToken}:{}),...(originToken?{"x-staff-access":originToken}:{})},body:JSON.stringify(payload)});
   const result=await response.json();if(response.status===401&&(token||deviceToken)){token="";deviceToken="";deviceRole="";localStorage.removeItem("adminToken");sessionStorage.removeItem("adminToken");localStorage.removeItem("deviceAccessToken");localStorage.removeItem("deviceRole");module=null;page=null;draw();throw new Error("Sua autorização expirou. Entre novamente.")}if(!response.ok){if(originToken&&/acesso|caixa.*fechado|revog/i.test(result.error||"")){originToken="";localStorage.removeItem("staffAccessToken");history.replaceState({},"",location.pathname);module=null;page=null;draw()}throw new Error(result.error||"Operação não concluída.");}
   if(checkout)checkoutRetry.complete(scope,original);
   try{await load(false);toast("Alteração salva.")}catch(error){showSyncError(error);toast("Pedido salvo. Aguardando atualização da tela.",true)}
@@ -264,18 +262,11 @@ async function enterModule(name){
   }catch(error){if(generation===moduleEntryGeneration)showSyncError(error);throw error}
 }
 function setupNav(items){nav.innerHTML=fiadoLabels(items.map(([key,label])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${label}</button>`).join("")+'<button data-home class="ghost">Módulos</button>')}
-function frontIdentityBar(){
-  const name=data.front_identity?.source_name||"";
-  if(name)return `<section class="front-identity"><label>Atendente<input value="${esc(name)}" readonly aria-label="Atendente deste caixa"></label><span>Nome confirmado até o fechamento do caixa</span></section>`;
-  return `<section class="front-identity front-identity-entry"><h2>Quem está atendendo?</h2><p>Digite seu nome uma vez. Ele ficará travado neste aparelho até fechar o caixa.</p><form data-form="front-identify"><label>Seu nome<input name="name" data-front-name maxlength="80" required autocomplete="given-name" placeholder="Digite seu nome"></label><button class="primary" type="submit" ${activeCash()?"":"disabled"}>Confirmar nome</button></form>${activeCash()?"":'<p class="muted">Aguarde a abertura do caixa.</p>'}</section>`;
-}
 function sharedStaffAccessDialog(accessToken){
   const url=`${location.origin}${location.pathname}?access=${encodeURIComponent(accessToken)}`,qr=`https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(url)}`;
-  openModal(`<h2>QR Code da equipe</h2><p>Todos os funcionários podem usar este mesmo QR Code. Cada um digita o próprio nome no seu aparelho.</p><img class="staff-qr" src="${qr}" alt="QR Code geral da equipe"><label class="field">Link de acesso<input value="${esc(url)}" readonly></label><p class="muted">O acesso e os nomes confirmados valem até o fechamento deste caixa.</p>`);
+  openModal(`<h2>QR Code da equipe</h2><p>Todos os funcionários podem usar este mesmo QR Code. Cada aparelho pode fazer pedidos simultaneamente.</p><img class="staff-qr" src="${qr}" alt="QR Code geral da equipe"><label class="field">Link de acesso<input value="${esc(url)}" readonly></label><p class="muted">O acesso vale até o fechamento deste caixa.</p>`);
 }
 function draw(){
-  const frontNameInput=document.activeElement?.matches?.("[data-front-name]")?document.activeElement:null;
-  const frontNameDraft=frontNameInput?{value:frontNameInput.value,start:frontNameInput.selectionStart,end:frontNameInput.selectionEnd}:null;
   const stockSearchInput=page==="stock"&&document.activeElement?.matches?.("[data-stock-search]")?document.activeElement:null;
   const stockHistorySearchInput=page==="stock"&&document.activeElement?.matches?.("[data-stock-history-search]")?document.activeElement:null;
   const cashHistorySearchInput=page==="cash"&&document.activeElement?.matches?.("[data-cash-history-search]")?document.activeElement:null;
@@ -288,8 +279,7 @@ function draw(){
   if(!module)return portal();
   if(module==="Frente de caixa"){
     page ||= "sales"; const ready=entries(data.kitchen).filter(([,o])=>(o.status||"pending")==="ready").length; setupNav([["sales","Vender"],["accounts","Comandas"],["frontKitchen",`Pedidos${ready?` (${ready})`:""}`]]);
-    app.innerHTML=fiadoLabels(frontIdentityBar()+(data.front_identity?.source_name?(page==="sales"?salesPage():page==="accounts"?accountsPage():frontKitchenPage()):""));
-    if(frontNameDraft){const input=app.querySelector("[data-front-name]");if(input){input.value=frontNameDraft.value;input.focus({preventScroll:true});input.setSelectionRange(frontNameDraft.start,frontNameDraft.end)}}
+    app.innerHTML=fiadoLabels(page==="sales"?salesPage():page==="accounts"?accountsPage():frontKitchenPage());
     centerSaleCategory();
     refreshTimer=startRefresh(true);
   }else if(module==="Cozinha"){
@@ -1207,7 +1197,6 @@ document.addEventListener("submit",async event=>{
     if(form.dataset.form==="login"){
       const remember=Boolean(fd.remember),response=await fetch("/api/login",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({password:fd.password,remember})}),result=await response.json();if(!response.ok)throw new Error(result.error);token=result.token;if(remember)localStorage.setItem("adminToken",token);else sessionStorage.setItem("adminToken",token);module="Admin";page="cash";await load(false);draw();return;
     }
-    if(form.dataset.form==="front-identify"){const submit=form.querySelector("button[type='submit']");if(submit.disabled)return;submit.disabled=true;try{const result=await mutate({action:"front.identify",name:fd.name});frontIdentityToken=result.access_token;localStorage.setItem("frontIdentityToken",frontIdentityToken);await load(false);draw()}finally{if(submit.isConnected)submit.disabled=false}return}
     if(form.dataset.form==="device-claim"){const response=await fetch("/api/device/claim",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({code:fd.code})}),result=await response.json();if(!response.ok)throw new Error(result.error);deviceToken=result.access_token;deviceRole=result.role;localStorage.setItem("deviceAccessToken",deviceToken);localStorage.setItem("deviceRole",deviceRole);module=null;page=null;await load(false);draw();return}
     if(form.dataset.form==="device-create"){const result=await mutate({action:"device.create",label:fd.label,role:fd.role},true);modalBody.innerHTML=`<div class="modal-content device-code-result"><span class="eyebrow">Código temporário</span><h2>${esc(fd.label)}</h2><b class="device-code">${esc(result.code)}</b><p>Digite este código no dispositivo em até 10 minutos.</p><button class="primary checkout-button" data-close>Concluir</button></div>`;draw();return}
     if(form.dataset.form==="summary-range"){

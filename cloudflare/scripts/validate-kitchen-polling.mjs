@@ -26,4 +26,12 @@ assert.equal((await api('/api/state',kitchen)).kitchen[first.id].status,'deliver
 const complete=await api('/api/state?since=999999',front);
 assert.equal(complete.sync,undefined);
 assert.equal(Object.values(complete.sales).filter(s=>s.order_id===first.id).length,1);
-console.log(JSON.stringify({result:'passed',environment:'local',transport:'direct full snapshots',checks:['concurrent retry','kitchen arrival','started','ready at front','delivery','complete state']}));
+const devices=await Promise.all(Array.from({length:3},()=>access('front')));
+const tab=await mutate({action:'account.create',account_type:'tab',customer_name:'Shared local table'},devices[0]);
+const simultaneous=await Promise.all(Array.from({length:6},(_,index)=>mutate({action:'sale.checkout',request_id:crypto.randomUUID(),destination:'tab',account_id:tab.id,items:[{menu_id:food.id,quantity:1,note:`Device ${index%3}`}]},devices[index%3])));
+assert.equal(new Set(simultaneous.map(order=>order.id)).size,6);
+const shared=await api('/api/state',devices[0]);
+assert.equal(shared.accounts[tab.id].items.length,6);
+assert.equal(Object.values(shared.sales).filter(s=>s.account_id===tab.id).length,6);
+assert.equal(shared.accounts[tab.id].items.reduce((total,item)=>total+item.quantity*item.price,0),60);
+console.log(JSON.stringify({result:'passed',environment:'local',transport:'direct full snapshots',devices:3,simultaneousOrders:6,checks:['concurrent retry','kitchen arrival','started','ready at front','delivery','shared tab without lost orders','no cashier name']}));

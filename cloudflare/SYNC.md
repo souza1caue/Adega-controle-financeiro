@@ -15,7 +15,11 @@ unless the server explicitly rejects authentication.
 
 Caixa and Cozinha remain available from the same module chooser without a
 password or registered device. Admin still requires its administrative login.
-Cashier name identification and existing role restrictions remain in place.
+Cashier name identification has been removed. Devices can enter and send orders
+without registering a name. Old cached identity headers are ignored; older pages
+receive a generic compatibility identity until refreshed. Role restrictions and
+the administrative password remain in place. Orders for an existing tab append
+atomically so simultaneous devices cannot overwrite each other's items.
 
 Checkout retry receipts still protect against duplicated sales and stock
 changes. Saved mutations remain successful when the following screen refresh
