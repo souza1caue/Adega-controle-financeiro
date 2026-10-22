@@ -6,7 +6,7 @@ async function api(path,headers={},body){
   const response=await fetch(base+path,{method:body?'POST':'GET',headers:{'content-type':'application/json',...headers},body:body&&JSON.stringify(body),signal:AbortSignal.timeout(10000)});
   const result=await response.json();assert.equal(response.ok,true,JSON.stringify(result));return result;
 }
-const {token}=await api('/api/login',{}, {password:process.env.KITCHEN_TEST_PASSWORD||'local-kitchen-test'});
+const {access_token:token}=await api('/api/access',{}, {role:'admin'});
 const admin={authorization:`Bearer ${token}`},mutate=(body,headers=admin)=>api('/api/mutate',headers,body);
 const initial=await api('/api/state',admin);
 if(!Object.values(initial.cash).some(c=>c.status==='open'))await mutate({action:'cash.open',opening_amount:0});

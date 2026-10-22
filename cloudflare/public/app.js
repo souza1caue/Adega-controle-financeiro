@@ -182,6 +182,7 @@ async function loadState(render=true){
   const response=await fetch("/api/state",{headers:{...(originToken?{"x-staff-access":originToken}:{}),...(deviceToken?{"x-device-access":deviceToken}:{}),...(token?{authorization:`Bearer ${token}`}:{})}});
   if(identity!==authIdentity()||generation!==moduleEntryGeneration)return;
   if(!response.ok&&response.status!==401){const result=await response.json().catch(()=>({}));throw new Error(result.error||"Falha ao atualizar os dados.")}
+  if(response.status===401&&module==="Admin"){if(!await openOperationalAccess("admin",generation))return;return loadState(render)}
   if(response.status===401&&deviceToken.startsWith("operation.")&&["Frente de caixa","Cozinha"].includes(module)){if(!await openOperationalAccess(module==="Cozinha"?"kitchen":"front",generation))return;return loadState(render)}
   if(!response.ok){
 
@@ -237,15 +238,21 @@ function empty(text){return `<div class="empty">${esc(text)}</div>`}
 
 function portal(){
   nav.innerHTML="";
-  app.innerHTML=`<section class="portal"><div class="eyebrow">Controle da Adega</div><h1>Escolha onde entrar</h1><p class="subtitle">Caixa e Cozinha pelo mesmo link, com pedidos atualizados em tempo real.</p><div class="module-grid">  ${[["Frente de caixa","Caixa","Vendas, comandas e acompanhamento de pedidos."],["Cozinha","Cozinha","Fila de preparo e pedidos prontos."],["Admin","Admin","Estoque, caixa, cardápio e relatórios. Acesso com senha."]].map(([name,label,description])=>`<button class="module-card" data-module="${name}"><span>ACESSAR</span><b>${label}</b><span>${description}</span></button>`).join("")}  </div></section>`;
+  app.innerHTML=`<section class="portal"><div class="eyebrow">Controle da Adega</div><h1>Escolha onde entrar</h1><p class="subtitle">Caixa e Cozinha pelo mesmo link, com pedidos atualizados em tempo real.</p><div class="module-grid">  ${[["Frente de caixa","Caixa","Vendas, comandas e acompanhamento de pedidos."],["Cozinha","Cozinha","Fila de preparo e pedidos prontos."],["Admin","Admin","Estoque, caixa, cardápio e relatórios."]].map(([name,label,description])=>`<button class="module-card" data-module="${name}"><span>ACESSAR</span><b>${label}</b><span>${description}</span></button>`).join("")}  </div></section>`;
 }
 let moduleEntryGeneration=0;
 async function openOperationalAccess(role,generation=moduleEntryGeneration){
   const response=await fetch("/api/access",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({role})}),result=await response.json();
   if(generation!==moduleEntryGeneration)return false;
   if(!response.ok)throw new Error(result.error||"Falha ao abrir esta area.");
-  deviceToken=result.access_token;deviceRole=result.role;
-  localStorage.setItem("deviceAccessToken",deviceToken);localStorage.setItem("deviceRole",deviceRole);return true;
+  if(role==="admin"){
+    token=result.access_token;deviceToken="";deviceRole="";
+    localStorage.removeItem("adminToken");sessionStorage.setItem("adminToken",token);
+  }else{
+    deviceToken=result.access_token;deviceRole=result.role;
+    localStorage.setItem("deviceAccessToken",deviceToken);localStorage.setItem("deviceRole",deviceRole);
+  }
+  return true;
 }
 async function enterModule(name){
   if(!["Frente de caixa","Cozinha","Admin"].includes(name))return;
@@ -257,8 +264,8 @@ async function enterModule(name){
   knownKitchenOrderIds=null;knownFrontKitchenStatuses=null;
   draw();
   try{
-    if(name!=="Admin"&&!await openOperationalAccess(name==="Cozinha"?"kitchen":"front",generation))return;
-    if(name!=="Admin"||token)await load(true);
+    if(!await openOperationalAccess(name==="Admin"?"admin":name==="Cozinha"?"kitchen":"front",generation))return;
+    await load(true);
   }catch(error){if(generation===moduleEntryGeneration)showSyncError(error);throw error}
 }
 function setupNav(items){nav.innerHTML=fiadoLabels(items.map(([key,label])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${label}</button>`).join("")+'<button data-home class="ghost">Módulos</button>')}
@@ -305,7 +312,7 @@ function draw(){
   if(cashHistorySearchSelection){const input=app.querySelector("[data-cash-history-search]");if(input){input.focus({preventScroll:true});input.setSelectionRange(...cashHistorySearchSelection)}}
 }
 
-function adminShell(content){const groups=[["Operação",[["cash","Caixa"],["stock","Estoque"],["staff","Funcionamento"]]],["Cadastros",[["menu","Cardápio"],["accounts","Fiado"]]]];return `<div class="admin-layout"><aside class="admin-sidebar"><div class="admin-identity"><span class="eyebrow">Administração</span><b>Controle da Adega</b></div><div class="admin-alert-control">${notificationAction()}</div>${groups.map(([label,items])=>`<div class="admin-nav-group"><small>${label}</small>${items.map(([key,text])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${text}</button>`).join("")}</div>`).join("")}<a class="admin-kitchen-link" href="/?area=cozinha" target="_blank" rel="noopener">Abrir cozinha ↗</a><button class="ghost admin-logout" data-admin-logout>Sair do Admin</button></aside><section class="admin-content">${content}</section></div>`}
+function adminShell(content){const groups=[["Operação",[["cash","Caixa"],["stock","Estoque"],["staff","Funcionamento"]]],["Cadastros",[["menu","Cardápio"],["accounts","Fiado"]]]];return `<div class="admin-layout"><aside class="admin-sidebar"><div class="admin-identity"><span class="eyebrow">Administração</span><b>Controle da Adega</b></div><div class="admin-alert-control">${notificationAction()}</div>${groups.map(([label,items])=>`<div class="admin-nav-group"><small>${label}</small>${items.map(([key,text])=>`<button data-page="${key}" class="${page===key?'nav-active':''}">${text}</button>`).join("")}</div>`).join("")}<a class="admin-kitchen-link" href="/?area=cozinha" target="_blank" rel="noopener">Abrir cozinha ↗</a><button class="ghost admin-logout" data-admin-logout>Voltar aos módulos</button></aside><section class="admin-content">${content}</section></div>`}
 
 function saleGroup(item){const name=(item.name||"").toLocaleLowerCase();if(category(item)==="Comidas")return"Porções";if(/cerveja|heineken|skol|brahma|original|budweiser|lata|latão|long neck/.test(name))return"Cervejas";if(/copão|dose|drink|gin|vodka|whisky|whiskey|jack|cavalo/.test(name))return"Drinks";if(/água|agua|coca|guaraná|guarana|gelo|red bull|energético|energetico|zero álcool|zero alcool|refrigerante|suco/.test(name))return"Sem álcool";return"Bebidas"}
 function centerSaleCategory(){
@@ -409,7 +416,7 @@ function queueAutomaticPrint(){if(printMode!=="automatic"||printingBusy)return;c
 
 function deviceDialog(){openModal(`<h2>Autorizar novo dispositivo</h2><p class="muted">O código gerado poderá ser usado uma vez e expirará em 10 minutos.</p><form data-form="device-create"><div class="field"><label>Nome do dispositivo</label><input name="label" placeholder="Ex.: Computador do caixa" required autofocus></div><div class="field"><label>Área permitida</label><select name="role"><option value="front">Frente de Caixa</option><option value="kitchen">Cozinha</option></select></div><button class="primary checkout-button">Gerar código</button></form>`)}
 function devicesPage(){const devices=entries(data.device_access).sort((a,b)=>(b[1].created_at||"").localeCompare(a[1].created_at||""));return heading("Dispositivos autorizados",`<button class="primary" data-new-device>+ Autorizar dispositivo</button>`)+`<div class="notice">Use um acesso separado em cada computador do Caixa ou da Cozinha. Você pode revogá-lo a qualquer momento.</div><div class="list">${devices.map(([id,device])=>`<div class="device-row"><div><b>${esc(device.label)}</b><small>${device.role==="front"?"Frente de Caixa":"Cozinha"} · ${device.claimed_at?`Ativado em ${date(device.claimed_at)}`:"Aguardando ativação"}${device.revoked_at?` · Revogado em ${date(device.revoked_at)}`:""}</small></div><span class="status ${device.revoked_at?"done":device.claimed_at?"ready":"pending"}">${device.revoked_at?"Revogado":device.claimed_at?"Ativo":"Pendente"}</span>${device.revoked_at?"":`<button class="danger" data-revoke-device="${id}">Revogar</button>`}</div>`).join("")||empty("Nenhum dispositivo autorizado.")}</div>`}
-function loginPage(){return `<section class="portal access-portal"><div class="eyebrow">Administração</div><h1>Entrar no Admin</h1><p class="subtitle">Use a senha para acessar estoque, fechamento de caixa e relatórios.</p><form data-form="login" class="card"><div class="field"><label>Senha administrativa</label><input type="password" name="password" autocomplete="current-password" required autofocus></div><label class="compare-toggle"><input type="checkbox" name="remember" value="true"> Manter conectado por 30 dias</label><button class="primary checkout-button" type="submit">Entrar no Admin</button></form></section>`}
+function loginPage(){return `<section class="portal"><h1>Abrindo Admin...</h1><p class="subtitle">Carregando os dados da administracao.</p></section>`}
 function summaryPage(){
   const all=entries(data.sales).filter(([,sale])=>!sale.voided_at),nowDate=new Date(),start=new Date(nowDate),end=new Date(nowDate),cashOptions=entries(data.cash).sort((a,b)=>(b[1].opened_at||"").localeCompare(a[1].opened_at||""));let sales=all,periodLabel=summaryFilter;
   if(summaryFilter==="Diário")start.setHours(0,0,0,0);
@@ -1194,9 +1201,6 @@ document.addEventListener("click",async event=>{
 document.addEventListener("submit",async event=>{
   event.preventDefault();const form=event.target;const fd=Object.fromEntries(new FormData(form));
   try{
-    if(form.dataset.form==="login"){
-      const remember=Boolean(fd.remember),response=await fetch("/api/login",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({password:fd.password,remember})}),result=await response.json();if(!response.ok)throw new Error(result.error);token=result.token;if(remember)localStorage.setItem("adminToken",token);else sessionStorage.setItem("adminToken",token);module="Admin";page="cash";await load(false);draw();return;
-    }
     if(form.dataset.form==="device-claim"){const response=await fetch("/api/device/claim",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({code:fd.code})}),result=await response.json();if(!response.ok)throw new Error(result.error);deviceToken=result.access_token;deviceRole=result.role;localStorage.setItem("deviceAccessToken",deviceToken);localStorage.setItem("deviceRole",deviceRole);module=null;page=null;await load(false);draw();return}
     if(form.dataset.form==="device-create"){const result=await mutate({action:"device.create",label:fd.label,role:fd.role},true);modalBody.innerHTML=`<div class="modal-content device-code-result"><span class="eyebrow">Código temporário</span><h2>${esc(fd.label)}</h2><b class="device-code">${esc(result.code)}</b><p>Digite este código no dispositivo em até 10 minutos.</p><button class="primary checkout-button" data-close>Concluir</button></div>`;draw();return}
     if(form.dataset.form==="summary-range"){

@@ -13,12 +13,15 @@ merge, or serialized refresh queue in the current application. Responses from
 an earlier module selection are discarded. Errors do not clear a valid login
 unless the server explicitly rejects authentication.
 
-Caixa and Cozinha remain available from the same module chooser without a
-password or registered device. Admin still requires its administrative login.
+Caixa, Cozinha and Admin are available from the same module chooser without a
+password or registered device. Anyone opening the system can select Admin.
+The admin choice issues a signed administrative session directly; no password
+form or password login request is part of the application flow. The old password
+API remains only for compatibility. Expired administrative access renews directly.
 Cashier name identification has been removed. Devices can enter and send orders
 without registering a name. Old cached identity headers are ignored; older pages
 receive a generic compatibility identity until refreshed. Role restrictions and
-the administrative password remain in place. Orders for an existing tab append
+the distinct module roles remain in place. Orders for an existing tab append
 atomically so simultaneous devices cannot overwrite each other's items.
 
 Checkout retry receipts still protect against duplicated sales and stock

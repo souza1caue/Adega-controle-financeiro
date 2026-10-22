@@ -15,7 +15,7 @@ async function state(f, headers) {
   return { status: response.status, ...await response.json() };
 }
 
-test('Caixa and Cozinha open without password or registered device, while Admin remains protected', async () => {
+test('module entry does not require passwords and each issued role remains distinct', async () => {
   const f = fixture();
   try {
     const front = await access(f, 'front'), kitchen = await access(f, 'kitchen');
@@ -29,7 +29,7 @@ test('Caixa and Cozinha open without password or registered device, while Admin 
       assert.notEqual((await f.call({ action: 'menu.delete', id: 'beer' }, headers)).status, 200);
     }
     assert.equal((await state(f, { authorization: `Bearer ${front.access_token}` })).status, 401);
-    assert.equal((await access(f, 'admin')).status, 400);
+    assert.equal((await access(f, 'admin')).status, 200);assert.equal((await access(f, 'invalid')).status, 400);
     f.put('menu', 'food', { name: 'Porcao', category: 'Comidas', price: 20 });
     const checkout = await f.call({ action: 'sale.checkout', customer_name: 'Cliente', payment_method: 'Digital', items: [{ menu_id: 'food', quantity: 1 }] }, frontHeaders);
     assert.equal(checkout.status, 200); assert.equal(f.records('kitchen')[0].created_by, 'Caixa principal');
@@ -51,7 +51,26 @@ test('operational access cannot be altered, used as a live ticket, or retained p
   assert.equal(await verifyOperationAccess(token + 'x', 'secret', 1001), null);
   assert.equal(await verifyOperationAccess(token, 'secret', 86401001), null);
   assert.equal(await verifyOperationAccess('wrong.token', 'secret', 1001), null);
-  await assert.rejects(operationAccess('admin', 'secret'));
+  await assert.rejects(operationAccess('invalid', 'secret'));
+});
+
+test('Admin opens without a password and can perform administrative operations',async()=>{
+ const f=fixture();try{
+  delete f.env.ADMIN_PASSWORD;
+  const opened=await access(f,'admin');assert.equal(opened.status,200);
+  const headers={authorization:`Bearer ${opened.access_token}`};
+  const snapshot=await state(f,headers);assert.equal(snapshot.status,200);
+  assert.equal((await f.call({action:'menu.save',id:'beer',name:'Cerveja',price:9,category:'Bebidas'},headers)).status,200);
+  assert.equal((await f.call({action:'cash.close',id:'cash',counted_cash:0,counted_account:0},headers)).status,200);
+  assert.equal(f.records('cash')[0].status,'closed');
+  assert.equal((await state(f,{'x-device-access':opened.access_token})).status,401);
+  assert.equal((await state(f,{authorization:`Bearer ${opened.access_token}x`})).status,401);
+ }finally{f.sqlite.close()}
+});
+
+test('the application contains no administrative password form or login request',()=>{
+ const source=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
+ assert.doesNotMatch(source,/data-form="login"|type="password"|name="password"|fetch\("\/api\/login"|Acesso com senha/);
 });
 
 function screen() {
@@ -61,7 +80,7 @@ function screen() {
     knownKitchenOrderIds: null, knownFrontKitchenStatuses: null,
     syncIdentity: '', syncCursor: null, syncVersions: new Map(), syncGeneration: 0, loadPending: null,
     historyLoads: new Map(), historyPages: new Map(), refreshTimer: null, clearInterval() {}, data: {},
-    localStorage: { setItem() {}, removeItem() {} }, liveSync: { stop() {} },
+    sessionStorage:{setItem(){},removeItem(){}},localStorage: { setItem() {}, removeItem() {} }, liveSync: { stop() {} },
     load: async () => { reads.push(context.module); context.syncIdentity=context.authIdentity();context.syncCursor=1;context.data={role:context.deviceRole}; }, draw: () => draws.push(context.module),showSyncError:assert.fail,
     prepareKitchenAlerts() {}, prepareFrontAlerts() {}, kitchenViewOpen: () => context.module === 'Cozinha', readyAlertsOpen: () => false,
     fiadoLabels: value => value,
@@ -81,8 +100,8 @@ test('entry always shows the module choices, and operational tabs switch without
   await c.enterModule('Cozinha'); assert.equal(c.module, 'Cozinha'); assert.equal(c.deviceRole, 'kitchen'); assert.equal(c.originToken, '');
   await c.enterModule('Frente de caixa'); assert.equal(c.module, 'Frente de caixa'); assert.equal(c.deviceRole, 'front');
   await c.enterModule('Admin'); assert.equal(c.module, 'Admin'); assert.equal(c.deviceToken, '');
-  assert.deepEqual(h.requests.sort(), ['front', 'kitchen']); assert.deepEqual(h.reads, ['Cozinha', 'Frente de caixa']);
-  assert.match(c.loginPage(), /type="password"/); assert.doesNotMatch(c.loginPage(), /device-claim/);
+  assert.deepEqual(h.requests.sort(), ['admin', 'front', 'kitchen']); assert.deepEqual(h.reads, ['Cozinha', 'Frente de caixa', 'Admin']);assert.equal(c.token,'operation.admin');
+  assert.doesNotMatch(c.loginPage(), /type="password"/); assert.doesNotMatch(c.loginPage(), /device-claim/);
   c.setupNav([]); assert.match(c.nav.innerHTML, /data-home/);assert.doesNotMatch(c.nav.innerHTML,/data-module/);
 });
 

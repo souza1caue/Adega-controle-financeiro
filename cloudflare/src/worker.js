@@ -66,6 +66,7 @@ async function isAdmin(request, env) {
   const header = request.headers.get("authorization") || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
   if (!token) return false;
+  if (token.startsWith("operation.")) return (await verifyOperationAccess(token, env.SESSION_SECRET))?.role === "admin";
   const tokenHash = await sha256(`${token}:${env.SESSION_SECRET}`);
   const row = await env.DB.prepare("SELECT 1 ok FROM sessions WHERE token_hash=? AND expires_at>CURRENT_TIMESTAMP")
     .bind(tokenHash).first();
@@ -75,7 +76,10 @@ async function isAdmin(request, env) {
 async function authorizedDevice(request, env) {
   const token = request.headers.get("x-device-access") || "";
   if (!token) return null;
-  if (token.startsWith("operation.")) return verifyOperationAccess(token, env.SESSION_SECRET);
+  if (token.startsWith("operation.")) {
+    const access = await verifyOperationAccess(token, env.SESSION_SECRET);
+    return access?.role === "admin" ? null : access;
+  }
   const tokenHash = await sha256(token);
   const row = await env.DB.prepare("SELECT id,data FROM records WHERE kind='device_access' AND json_extract(data,'$.token_hash')=? LIMIT 1").bind(tokenHash).first();
   if (!row) return null;
@@ -1479,7 +1483,7 @@ export default {
       if (url.pathname === "/api/access" && request.method === "POST") {
         if (!env.SESSION_SECRET) return reply({ error: "Acesso operacional indisponível." }, 503);
         const { role } = await request.json();
-        if (!["front", "kitchen"].includes(role)) return reply({ error: "Escolha Caixa ou Cozinha." }, 400);
+        if (!["front", "kitchen", "admin"].includes(role)) return reply({ error: "Escolha Caixa, Cozinha ou Admin." }, 400);
         return reply({ access_token: await operationAccess(role, env.SESSION_SECRET), role, expires_at: Date.now() + 86400000 });
       }
       if (url.pathname === "/api/live" && request.method === "GET") {
