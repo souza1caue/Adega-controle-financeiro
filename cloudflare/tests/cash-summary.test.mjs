@@ -38,19 +38,19 @@ test('summary subtracts products, employees, consumption, events, losses and cou
   assert.equal((html.match(/<article/g) || []).length, 3);
   assert.match(html, /<span>Vendas<\/span>/);
   assert.match(html, /<span>Custo<\/span>/);
-  assert.match(html, /<span>Lucro<\/span>/);
+  assert.match(html, /<span>Faturamento<\/span>/);
   assert.doesNotMatch(html, /Dinheiro em caixa|Recebimentos digitais|Total recebido/);
 });
 
-test('missing product costs leave cost and profit pending, and losses display a negative result', () => {
+test('revenue stays available when product costs are missing or exceed sales', () => {
   const unknown = summaryScreen({ salesTotal: 100, known: false });
   const pending = unknown.cashSummaryCards(unknown.cashSummaryMetrics('cash', {}));
-  assert.equal((pending.match(/<b>Pendente<\/b>/g) || []).length, 2);
+  assert.equal((pending.match(/<b>Pendente<\/b>/g) || []).length, 1);
   const loss = summaryScreen({ salesTotal: 50, operating: 80 });
   const result = loss.cashSummaryMetrics('cash', {});
   assert.equal(result.profit, -30);
-  assert.match(loss.cashSummaryCards(result), /cash-profit-negative/);
-  assert.match(loss.cashSummaryCards(result), /R\$ -30/);
+  assert.doesNotMatch(loss.cashSummaryCards(result), /cash-profit-negative/);
+  assert.match(loss.cashSummaryCards(result), /<span>Faturamento<\/span><b>R\$ 50<\/b>/);
 });
 
 test('empty cash summary starts at zero and does not treat supplies or old credit receipts as sales', () => {

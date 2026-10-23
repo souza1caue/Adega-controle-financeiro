@@ -973,7 +973,7 @@ function cashSummaryMetrics(id,cash){
   return{sales:live.salesTotal,cost,profit:live.salesTotal-cost,known:salesCostsAreKnown(live.sales)};
 }
 function cashSummaryCards(summary){
-  return `<article class="kpi-card"><span>Vendas</span><b>${money(summary.sales)}</b><small>Total vendido neste caixa</small></article><article class="kpi-card"><span>Custo</span><b>${summary.known?money(summary.cost):"Pendente"}</b><small>${summary.known?"Produtos e funcionamento do dia":"Cadastre os custos dos produtos"}</small></article><article class="kpi-card featured ${summary.known&&summary.profit<0?'cash-profit-negative':''}"><span>Lucro</span><b>${summary.known?money(summary.profit):"Pendente"}</b><small>${summary.known?"Vendas menos o custo total":"Aguardando os custos dos produtos"}</small></article>`;
+  return `<article class="kpi-card"><span>Vendas</span><b>${money(summary.sales)}</b><small>Total vendido neste caixa</small></article><article class="kpi-card"><span>Custo</span><b>${summary.known?money(summary.cost):"Pendente"}</b><small>${summary.known?"Produtos e funcionamento do dia":"Cadastre os custos dos produtos"}</small></article><article class="kpi-card featured"><span>Faturamento</span><b>${money(summary.sales)}</b><small>Total vendido neste caixa</small></article>`;
 }
 function unifiedCashPage(){
   const shell=document.createElement("div");
