@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
@@ -33,7 +33,7 @@ test('fixed cost works without recipe and rejects invalid values and unauthorize
 test('menu switch marks selected mode and reveals saved fixed cost input',()=>{
   const source=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
   const line=name=>source.split('\n').find(l=>l.startsWith(`function ${name}(`));
-  const context={data:{settings:{menu_cost:{mode:'fixed'}},menu:{beer:{name:'Beer',price:8,fixed_cost_price:2.5}},recipes:{},stock_items:{}},entries:Object.entries,esc:String,money:n=>`R$ ${n}`,category:()=> 'Bebidas',heading:(title,action)=>title+action,openModal:html=>context.html=html};
+  const context={menuSearch:"",data:{settings:{menu_cost:{mode:'fixed'}},menu:{beer:{name:'Beer',price:8,fixed_cost_price:2.5}},recipes:{},stock_items:{}},entries:Object.entries,esc:String,money:n=>`R$ ${n}`,category:()=> 'Bebidas',heading:(title,action)=>title+action,openModal:html=>context.html=html};
   runInNewContext(source.split('\n').find(l=>l.startsWith('const fixedMenuCost'))+'\n'+['menuPage','menuCost','menuDialog'].map(line).join('\n')+'\nhtml=menuPage();',context);
   assert.match(context.html,/data-menu-cost-mode="fixed" aria-pressed="true"/);
   runInNewContext('menuDialog("beer")',context);
