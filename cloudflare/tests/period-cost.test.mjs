@@ -5,7 +5,7 @@ import { runInNewContext } from 'node:vm';
 import { fixture } from './fixture.mjs';
 const source=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
 function report(data,liveCost=0){
- const context={data,entries:Object.entries,summaryCalendarMonth:'2026-10',cashProject:()=>'',date:String,cashLive:()=>({sales:[],salesTotal:0}),dayOperatingCosts:()=>({total:liveCost}),saleActualCost:sale=>Number(sale.unit_cost||0)*Number(sale.quantity||0),salesCostsAreKnown:()=>true};
+ const context={data,entries:Object.entries,summaryCalendarMonth:'2026-10',cashProject:()=>'',date:String,localDay:value=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(value)),cashLive:()=>({sales:[],salesTotal:0}),dayOperatingCosts:()=>({total:liveCost}),saleActualCost:sale=>Number(sale.unit_cost||0)*Number(sale.quantity||0),salesCostsAreKnown:()=>true};
  runInNewContext(source.slice(source.indexOf('function periodSelection('),source.indexOf('function groupedOrders('))+'\n'+source.slice(source.indexOf('function periodCostMetrics('),source.indexOf('const overviewPageBeforeSimplifiedMetrics='))+'\n'+source.slice(source.indexOf('function cashSummaryMetrics('),source.indexOf('function cashSummaryCards(')),context);
  return context;
 }

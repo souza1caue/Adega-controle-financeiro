@@ -880,11 +880,14 @@ async function mutate(request, env) {
     const account = await readRecord(db, "accounts", id);
     if (!account) throw new Error("Conta não encontrada.");
     if (!admin && account.account_type !== "tab") throw new Error("O fiado está disponível somente no Admin.");
+    const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
+    if (!open) throw new Error("Abra o caixa antes de adicionar um consumo.");
+    if (account.account_type === "tab" && (account.status === "closed" || account.cash_session_id !== open.id)) throw new Error("Escolha uma comanda aberta deste caixa.");
     required(input.description, "o item");
     const createdAt = now();
     const orderId = uid();
     const origin = await orderOrigin(db, input.origin_token);
-    const entry = { id: uid(), menu_id: input.menu_id || "", description: input.description.trim(), quantity: quantity(input.quantity), price: amount(input.price, "o preço"), note: (input.note || "").trim(), created_at: createdAt, order_id: orderId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "", stock_usage: [] };
+    const entry = { id: uid(), cash_session_id: open.id, menu_id: input.menu_id || "", description: input.description.trim(), quantity: quantity(input.quantity), price: amount(input.price, "o preço"), note: (input.note || "").trim(), created_at: createdAt, order_id: orderId, created_by: origin.source_name, created_source_type: origin.source_type, created_shift_id: origin.source_shift_id || "", stock_usage: [] };
     if (entry.menu_id) { entry.stock_usage = await recipeUsage(db, entry.menu_id, entry.quantity); Object.assign(entry, await menuCostSnapshot(db, entry.menu_id, entry.stock_usage, entry.quantity)); }
     if (account.account_type === "tab" && account.owner_pricing && !entry.menu_id) throw new Error("Selecione um produto com custo cadastrado para a comanda de proprietário.");
     if ((account.account_type === "owner" || (account.account_type === "tab" && account.owner_pricing)) && entry.menu_id) {
@@ -896,7 +899,7 @@ async function mutate(request, env) {
     account.items = [...(account.items || []), entry];
     const statements = [
       putRecord(db, "accounts", id, account),
-      putRecord(db, "sales", uid(), { menu_id: entry.menu_id, cost_mode: entry.cost_mode, unit_cost: entry.unit_cost, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, customer_name: account.customer_name, payment_method: "Caderneta", account_id: id, account_item_id: entry.id, order_id: orderId, created_at: createdAt, ...origin }),
+      putRecord(db, "sales", uid(), { menu_id: entry.menu_id, cost_mode: entry.cost_mode, unit_cost: entry.unit_cost, stock_usage: entry.stock_usage, description: entry.description, quantity: entry.quantity, price: entry.price, customer_name: account.customer_name, payment_method: "Caderneta", account_id: id, account_item_id: entry.id, cash_session_id: open.id, order_id: orderId, created_at: createdAt, ...origin }),
     ];
     if (entry.stock_usage.length) {
       for (const usage of entry.stock_usage) {
@@ -1026,23 +1029,38 @@ async function mutate(request, env) {
     return reply({ ok: true, id: paymentId, balance_after: remainingBalance, closed: remainingBalance <= 0.001 });
   } else if (action === "account.convertToCredit") {
     const tab = await readRecord(db, "accounts", id);
-    if (!tab || tab.account_type !== "tab" || tab.status === "closed") throw new Error("Comanda aberta não encontrada.");
+    if (tab?.account_type === "tab" && tab.status === "closed" && tab.converted_to_account_id) return reply({ ok: true, id: tab.converted_to_account_id, closed: true });
+    if (!tab || tab.account_type !== "tab" || tab.status === "closed" || tab.hosted_event_id) throw new Error("Comanda aberta não encontrada.");
     const open = await db.prepare("SELECT id FROM records WHERE kind='cash' AND json_extract(data,'$.status')='open' ORDER BY created_at DESC LIMIT 1").first();
     if (!open || tab.cash_session_id !== open.id) throw new Error("Esta comanda não pertence ao caixa aberto.");
-    const balance = accountBalance(tab);
+    const originalTab = JSON.stringify(tab), balance = accountBalance(tab);
     if (balance <= 0.001) throw new Error("Esta comanda não possui saldo para transferir.");
-    let creditId = input.credit_account_id || uid();
+    if (input.transfer_mode && !["new", "existing"].includes(input.transfer_mode)) throw new Error("Escolha uma opção de transferência válida.");
+    if (input.transfer_mode === "new") input.credit_account_id = "";
+    if (input.transfer_mode === "existing") required(input.credit_account_id, "a ficha de fiado de destino");
+    const creditId = input.credit_account_id || uid();
     let credit = input.credit_account_id ? await readRecord(db, "accounts", creditId) : null;
     if (input.credit_account_id && !credit) throw new Error("A ficha de fiado escolhida não foi encontrada.");
-    if (credit && credit.account_type === "tab") throw new Error("Escolha uma ficha de fiado válida.");
-    if (!credit) { required(input.customer_name, "o nome da nova ficha de fiado"); credit = { account_type: "customer", customer_name: input.customer_name.trim(), note: (input.note || "").trim(), opening_balance: 0, opening_balance_at: now(), items: [], payments_total: 0, created_at: now() }; }
-    const createdAt = now(), transferItem = { id: uid(), description: `Saldo transferido da comanda ${tab.customer_name}`, quantity: 1, price: balance, note: (input.note || "").trim(), created_at: createdAt, order_id: uid(), created_by: input.responsible?.trim() || "Caixa principal", source_tab_id: id };
+    if (credit && (credit.account_type === "tab" || credit.account_type === "owner")) throw new Error("Escolha uma ficha de fiado válida.");
+    const createdAt = now(), transferId = uid(), newCredit = !credit;
+    if (!credit) { required(input.customer_name, "o nome da nova ficha de fiado"); credit = { account_type: "customer", customer_name: input.customer_name.trim(), note: (input.note || "").trim(), opening_balance: 0, opening_balance_at: createdAt, items: [], payments_total: 0, created_at: createdAt }; }
+    const transferItem = { id: uid(), description: `Saldo transferido da comanda ${tab.customer_name}`, quantity: 1, price: balance, note: (input.note || "").trim(), created_at: createdAt, order_id: uid(), created_by: input.responsible.trim(), cash_session_id: open.id, source_tab_id: id };
     credit.items = [...(credit.items || []), transferItem];
     tab.payments_total = Math.round((Number(tab.payments_total || 0) + balance) * 100) / 100;
-    tab.status = "closed"; tab.closed_at = createdAt; tab.converted_to_account_id = creditId;
-    const transfer = { account_id: id, customer_name: tab.customer_name, amount: balance, payment_method: "Transferido para fiado", responsible: input.responsible?.trim() || "Caixa principal", note: (input.note || "").trim(), settlement_type: "transfer", converted_account_id: creditId, created_at: createdAt };
-    await db.batch([putRecord(db, "accounts", id, tab), putRecord(db, "accounts", creditId, credit), putRecord(db, "account_payments", uid(), transfer)]);
-    return reply({ ok: true, id: creditId, closed: true });
+    tab.status = "closed"; tab.closed_at = createdAt; tab.converted_to_account_id = creditId; tab.credit_transfer_id = transferId;
+    const transfer = { cash_session_id: open.id, account_id: id, customer_name: tab.customer_name, amount: balance, payment_method: "Transferido para fiado", responsible: input.responsible.trim(), note: (input.note || "").trim(), settlement_type: "transfer", converted_account_id: creditId, created_at: createdAt };
+    // Claim the unchanged tab first. All following writes require this claim,
+    // so retries or simultaneous clicks cannot duplicate a debt.
+    const guard = "EXISTS(SELECT 1 FROM records WHERE kind='accounts' AND id=? AND json_extract(data,'$.credit_transfer_id')=?)";
+    const claim = db.prepare("UPDATE records SET data=?,updated_at=CURRENT_TIMESTAMP WHERE kind='accounts' AND id=? AND data=?").bind(JSON.stringify(tab), id, originalTab);
+    const saveCredit = newCredit
+      ? db.prepare(`INSERT INTO records(kind,id,data) SELECT 'accounts',?,? WHERE ${guard}`).bind(creditId, JSON.stringify(credit), id, transferId)
+      : db.prepare(`UPDATE records SET data=json_remove(json_set(data,'$.items',json_insert(COALESCE(json_extract(data,'$.items'),'[]'),'$[#]',json(?)),'$.updated_at',?),'$.closed_at'),updated_at=CURRENT_TIMESTAMP WHERE kind='accounts' AND id=? AND ${guard}`).bind(JSON.stringify(transferItem), createdAt, creditId, id, transferId);
+    const saveTransfer = db.prepare(`INSERT INTO records(kind,id,data) SELECT 'account_payments',?,? WHERE ${guard}`).bind(transferId, JSON.stringify(transfer), id, transferId);
+    await db.batch([claim, saveCredit, saveTransfer]);
+    const saved = await readRecord(db, "accounts", id);
+    if (saved?.status !== "closed" || !saved.converted_to_account_id) throw new Error("A comanda foi alterada. Confira o saldo e tente transferir novamente.");
+    return reply({ ok: true, id: saved.converted_to_account_id, closed: true });
   } else if (action === "stock.event.create") {
     if (!["loss", "courtesy", "staff_consumption"].includes(input.event_type)) throw new Error("Tipo de saída inválido.");
     const items = await cartItems(db, input.items);
@@ -1408,7 +1426,7 @@ async function mutate(request, env) {
     const paymentTotals = {};
     for (const sale of directSales) paymentTotals[paymentGroup(sale.payment_method) || "Não informado"] = (paymentTotals[paymentGroup(sale.payment_method) || "Não informado"] || 0) + Number(sale.quantity || 0) * Number(sale.price || 0);
     const receiptRows = await db.prepare("SELECT data FROM records WHERE kind='account_payments' AND json_extract(data,'$.cash_session_id')=?").bind(id).all();
-    const receipts = receiptRows.results.map((row) => JSON.parse(row.data)).filter((payment) => !payment.voided_at);
+    const receipts = receiptRows.results.map((row) => JSON.parse(row.data)).filter((payment) => !payment.voided_at && payment.settlement_type !== "transfer" && payment.payment_method !== "Transferido para fiado");
     for (const payment of receipts) paymentTotals[paymentGroup(payment.payment_method)] = (paymentTotals[paymentGroup(payment.payment_method)] || 0) + Number(payment.amount || 0);
     const supplies = (cash.movements || []).filter((movement) => movement.type === 'supply').reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
     const withdrawals = (cash.movements || []).filter((movement) => movement.type === 'withdrawal').reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
