@@ -56,7 +56,7 @@ test('legacy identify calls store no names and do not create a new requirement',
 
 test('front draws sales directly without a name form or identity state',()=>{
  const source=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
- const context={module:'Frente de caixa',page:'sales',refreshTimer:null,data:{kitchen:{},front_identity:null},
+ const context={disclosureState:{capture(){},restore(){}},module:'Frente de caixa',page:'sales',refreshTimer:null,data:{kitchen:{},front_identity:null},
   document:{activeElement:null,body:{classList:{toggle(){}}}},app:{classList:{toggle(){}},querySelector:()=>null},
   clearInterval(){},activeCash:()=>null,entries:Object.entries,setupNav(){},fiadoLabels:value=>value,
   salesPage:()=>'<div>Produtos para vender</div>',centerSaleCategory(){},startRefresh(){}};

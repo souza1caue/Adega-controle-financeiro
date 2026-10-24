@@ -14,6 +14,7 @@ function searchScreen() {
     matches: selector => selector === '[data-cash-history-search]',
   };
   const context = {
+    disclosureState: { capture() {}, restore() {} },
     liveSync: { ensure() {} },
     page: 'cash', module: 'Admin', token: 'admin', refreshTimer: null,
     cashHistorySearch: '', cashHistoryOpen: false, cashReportsOpen: false, overviewPeriodOpen: false,
