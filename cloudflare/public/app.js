@@ -35,7 +35,7 @@ let knownFrontKitchenStatuses = null;
 let saleCategory = "Todos", saleSearch = "", checkoutSubmitting = false, frontKitchenFilter = "ready", frontKitchenHistoryOpen = false, kitchenHistoryOpen = false, staffCashId = "";
 let accountTypeView = "customer";
 let accountSearch = "";
-let tabStatusView = "open", closedTabCashId = "", closedTabSearch = "";
+let tabStatusView = "open", closedTabSearch = "";
 let menuSearch = "";
 let stockView = "current";
 let stockSearch = "";
@@ -756,7 +756,6 @@ document.addEventListener("click",event=>{
   if(button){preservePurchaseMeta();purchaseLineDialog("",button.dataset.replenishItem)}
 });
 document.addEventListener("change",event=>{
-  if(event.target.matches("[data-closed-tab-cash]")){closedTabCashId=event.target.value;draw()}
   if(event.target.matches("[data-quick-unit]"))updateQuickStockUnit(event.target.form);
   if(event.target.matches("[data-quick-existing]"))selectExistingQuickStockItem(event.target.form,event.target.value);
   if(event.target.matches("[data-quick-category]")){
@@ -1037,13 +1036,13 @@ accountsPage=function(){
 function tabsNavigation(content){return `<div class="tabs-workspace"><nav class="tabs-sidebar" aria-label="Situação das comandas"><button type="button" data-tab-view="open" aria-pressed="${tabStatusView==='open'}" class="${tabStatusView==='open'?'nav-active':''}">Comandas abertas</button><button type="button" data-tab-view="closed" aria-pressed="${tabStatusView==='closed'}" class="${tabStatusView==='closed'?'nav-active':''}">Comandas fechadas</button></nav><section class="tabs-content">${content}</section></div>`}
 function closedTabEntries(){
   const normalize=value=>String(value||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLocaleLowerCase("pt-BR"),query=normalize(closedTabSearch).trim();
-  const cashOptions=entries(data.cash).sort((a,b)=>(b[1].opened_at||"").localeCompare(a[1].opened_at||"")),cashId=closedTabCashId||activeCash()?.[0]||cashOptions[0]?.[0]||"all";
-  return{cashId,cashOptions,tabs:entries(data.accounts).filter(([,a])=>a.account_type==="tab"&&a.status==="closed"&&(cashId==="all"||a.cash_session_id===cashId)&&(!query||normalize(a.customer_name).includes(query))).sort((a,b)=>(b[1].closed_at||b[1].created_at||"").localeCompare(a[1].closed_at||a[1].created_at||""))};
+  const cashId=activeCash()?.[0];
+  return{cashId,tabs:entries(data.accounts).filter(([,a])=>a.account_type==="tab"&&a.status==="closed"&&(cashId&&a.cash_session_id===cashId)&&(!query||normalize(a.customer_name).includes(query))).sort((a,b)=>(b[1].closed_at||b[1].created_at||"").localeCompare(a[1].closed_at||a[1].created_at||""))};
 }
 function closedTabsPage(){
- const{cashId,cashOptions,tabs}=closedTabEntries();
- const rows=tabs.map(([id,a])=>`<button type="button" class="account-card-simple closed-tab-card" data-account="${id}"><span><b>${esc(a.customer_name)}</b><small>${date(a.closed_at||a.last_payment_at)} · ${a.converted_to_account_id?'Transferida para fiado':'Fechada'}</small></span><strong>${money(accountCharges(a))}</strong></button>`).join("")||empty("Nenhuma comanda fechada encontrada.");
- return heading("Comandas fechadas")+`<div class="closed-tabs-filters"><label class="field">Caixa / dia de abertura<select data-closed-tab-cash aria-label="Caixa das comandas fechadas"><option value="all" ${cashId==='all'?'selected':''}>Todos os caixas</option>${cashOptions.map(([id,cash])=>`<option value="${esc(id)}" ${cashId===id?'selected':''}>${date(cash.opened_at)} · ${cash.status==='open'?'Aberto':'Fechado'}</option>`).join("")}</select></label><label class="product-search"><span aria-hidden="true">⌕</span><input data-closed-tab-search value="${esc(closedTabSearch)}" placeholder="Buscar comanda pelo nome..." aria-label="Buscar comanda fechada" autocomplete="off"></label></div><p class="muted">${tabs.length} comanda${tabs.length===1?'':'s'} fechada${tabs.length===1?'':'s'} · selecione para consultar o extrato.</p><div class="account-cards account-cards-simple">${rows}</div>`;
+ const{tabs}=closedTabEntries();
+ const rows=tabs.map(([id,a])=>`<button type="button" class="account-card-simple closed-tab-card" data-account="${id}"><span><b>${esc(a.customer_name)}</b><small>${date(a.closed_at||a.last_payment_at)} · ${a.converted_to_account_id?'Transferida para fiado':'Fechada'}</small></span><strong>${money(accountCharges(a))}</strong></button>`).join("")||empty("Nenhuma comanda fechada neste caixa.");
+ return heading("Comandas fechadas")+`<div class="closed-tabs-filters"><label class="product-search"><span aria-hidden="true">⌕</span><input data-closed-tab-search value="${esc(closedTabSearch)}" placeholder="Buscar comanda pelo nome..." aria-label="Buscar comanda fechada" autocomplete="off"></label></div><p class="muted">${tabs.length} comanda${tabs.length===1?'':'s'} fechada${tabs.length===1?'':'s'} · selecione para consultar o extrato.</p><div class="account-cards account-cards-simple">${rows}</div>`;
 }
 function closedTabDialog(id){
  const a=data.accounts[id];if(!a||a.account_type!=="tab"||a.status!=="closed")return;
